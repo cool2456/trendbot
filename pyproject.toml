@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trendbot"
+version = "1.0.0"
+description = "Diversified trend following v1.0 — implementation of PREREGISTRATION.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "requests>=2.31",
+    "pyarrow>=15",
+    "tabulate>=0.9",
+]
+
+[project.optional-dependencies]
+# Historical price history for the research path only. The test suite never imports these.
+research = ["yfinance>=0.2.40"]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+include = ["trendbot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::RuntimeWarning"]
+markers = ["slow: deselect with -m 'not slow'"]

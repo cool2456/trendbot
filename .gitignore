@@ -9,3 +9,6 @@ __pycache__/
 .venv/
 venv/
 .DS_Store
+state/
+data/cache/
+results/
