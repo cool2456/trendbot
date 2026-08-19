@@ -1,0 +1,11 @@
+.env
+token.json
+*.key
+bot_state.json
+seen_ids.json
+*.jsonl
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store
