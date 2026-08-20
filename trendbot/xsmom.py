@@ -23,27 +23,48 @@ Three things this module deliberately does NOT do, mirroring :mod:`trendbot.sign
 
 Bucket sizes when the count does not divide
 -------------------------------------------
-41 instruments do not split into five equal quintiles. Section 3 says "Top quintile
-(highest ~8 of 41)", and 41 // 5 == 8, so the top bucket holds 8 and the leftover
-name falls into the *bottom* bucket: sizes 8, 8, 8, 8, 9. This is the only partition
-of all 41 in which the top bucket is exactly the 8 that section 3 names, and it is
-the convention used for both the traded position (section 3) and the five-bucket
-monotonicity gate (section 8), so the traded set and Q1 are the same set by
-construction rather than by coincidence.
+A count rarely divides by the number of buckets, and the leftover has to go
+somewhere. Which convention applies is **not** a free choice made here: each
+pre-registration either pins it or is read as leaving it open, and the answer is
+passed in as ``method``. Two are implemented.
 
-Where fewer than ``n_quantiles`` instruments have a defined momentum the bucket size
-is zero, nothing is ranked, and no instrument is selected. That is the honest
+``method="floor"`` - every bucket but the last holds ``n // k``; the remainder falls
+into the *bottom* bucket. This is experiment 002's convention and the default, so
+nothing about 002 moves. PREREG_002.md section 3 pinned it by naming the top bucket's
+size - "Top quintile (highest ~8 of 41)", and ``41 // 5 == 8`` - which makes sizes
+8, 8, 8, 8, 9 the only partition of all 41 whose top bucket is the 8 the document
+names.
+
+``method="even"`` - ranks are split as evenly as ``k`` buckets allow, via
+``bucket = floor(rank0 * k / n)``. Sizes differ by at most one, and in particular the
+top and bottom buckets do. PREREG_003.md section 3 says only "sort into deciles (ten
+buckets)" and names no size, and its section 8 gate is the **D1-D10 spread and its
+t-statistic**. Under ``"floor"`` at 409 names the bottom decile would hold 49 against
+the top decile's 40 - 22.5% wider - which dilutes the extreme losers toward the middle
+and narrows the measured spread, in the same direction as the survivorship bias
+section 2 already warns about. ``"even"`` keeps the two ends the same size so the
+spread compares like with like.
+
+Whichever convention applies, it is used for **both** the traded position (section 3)
+and the monotonicity gate (section 8), so the traded set and the top bucket are the
+same set by construction rather than by coincidence.
+
+Where fewer than ``n_quantiles`` instruments have a defined momentum nothing is
+ranked and no instrument is selected, under either method. That is the honest
 extension of "insufficient history -> excluded from the ranking" to the case where
 the ranking itself cannot exist.
 """
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 import pandas as pd
 
 __all__ = [
     "SIGNAL_ID",
+    "BucketMethod",
     "cross_sectional_momentum",
     "quantile_labels",
     "top_quantile_weights",
@@ -107,22 +128,48 @@ def cross_sectional_momentum(
     return (recent_ok / past_ok - 1.0).astype(float)
 
 
-def quantile_sizes(n_valid: int, n_quantiles: int) -> tuple[int, ...]:
+BucketMethod = Literal["floor", "even"]
+
+
+def _check_method(method: str) -> None:
+    if method not in ("floor", "even"):
+        raise ValueError(
+            f"unknown bucket method {method!r}; expected 'floor' (experiment 002's "
+            "remainder-to-the-bottom rule) or 'even' (sizes differing by at most one)"
+        )
+
+
+def quantile_sizes(
+    n_valid: int, n_quantiles: int, method: BucketMethod = "floor"
+) -> tuple[int, ...]:
     """Bucket sizes for ``n_valid`` instruments cut into ``n_quantiles`` buckets.
 
-    Every bucket but the last holds ``n_valid // n_quantiles``; the remainder falls
-    into the bottom bucket. Returned so the convention can be asserted in a test and
-    printed in a report rather than inferred from behaviour.
+    Returned so the convention can be asserted in a test and printed in a report
+    rather than inferred from behaviour. See the module docstring for what each
+    method is and which document asks for it.
     """
     if n_quantiles < 2:
         raise ValueError("a quantile sort needs at least two buckets")
-    size = int(n_valid) // int(n_quantiles)
-    if size == 0:
-        return tuple([0] * n_quantiles)
-    return tuple([size] * (n_quantiles - 1) + [int(n_valid) - size * (n_quantiles - 1)])
+    _check_method(method)
+    n, k = int(n_valid), int(n_quantiles)
+    if n < k:
+        # The sort cannot exist: at least one bucket would be empty however the names
+        # are dealt out. Both methods refuse rather than producing a one-name "decile".
+        return tuple([0] * k)
+    if method == "floor":
+        size = n // k
+        return tuple([size] * (k - 1) + [n - size * (k - 1)])
+    # Must agree with quantile_labels' ``bucket = floor(rank0 * k / n)`` exactly, or a
+    # report would print one partition while the engine traded another. Bucket b holds
+    # the 0-based ranks in ``[ceil(b*n/k), ceil((b+1)*n/k))``; ``-(-x // y)`` is integer
+    # ceiling division. ``tests/test_xsmom.py`` asserts the two agree for both methods.
+    edges = [-(-(b * n) // k) for b in range(k)] + [n]
+    return tuple(edges[b + 1] - edges[b] for b in range(k))
 
 
-def quantile_labels(momentum: pd.DataFrame, n_quantiles: int) -> pd.DataFrame:
+def quantile_labels(
+    momentum: pd.DataFrame, n_quantiles: int, method: BucketMethod = "floor"
+) -> pd.DataFrame:
     """0-based bucket label per instrument per date; 0 is the highest momentum.
 
     NaN where the instrument has no defined momentum on that date, and NaN across a
@@ -130,31 +177,39 @@ def quantile_labels(momentum: pd.DataFrame, n_quantiles: int) -> pd.DataFrame:
     """
     if n_quantiles < 2:
         raise ValueError("a quantile sort needs at least two buckets")
+    _check_method(method)
 
     # method="first" breaks ties by column order, which makes the label deterministic.
     # Exact ties in a twelve-month return on float prices are vanishingly rare; leaving
     # them to an averaged rank would put a name in a fractional bucket instead.
     ranks = momentum.rank(axis=1, ascending=False, method="first").to_numpy(dtype=float)
     valid = np.isfinite(ranks)
-    size = valid.sum(axis=1) // int(n_quantiles)
+    n_valid = valid.sum(axis=1)
+    k = int(n_quantiles)
 
     labels = np.full(ranks.shape, np.nan)
-    rows = np.flatnonzero(size > 0)
+    rows = np.flatnonzero(n_valid >= k)
     if len(rows):
-        bucket = (ranks[rows] - 1.0) // size[rows, None]
-        bucket = np.minimum(bucket, n_quantiles - 1)
+        rank0 = ranks[rows] - 1.0
+        if method == "floor":
+            bucket = rank0 // (n_valid[rows] // k)[:, None]
+        else:
+            bucket = (rank0 * k) // n_valid[rows][:, None]
+        bucket = np.minimum(bucket, k - 1)
         labels[rows] = np.where(valid[rows], bucket, np.nan)
     return pd.DataFrame(labels, index=momentum.index, columns=momentum.columns)
 
 
-def top_quantile_weights(momentum: pd.DataFrame, n_quantiles: int) -> pd.DataFrame:
+def top_quantile_weights(
+    momentum: pd.DataFrame, n_quantiles: int, method: BucketMethod = "floor"
+) -> pd.DataFrame:
     """Section 3's position: equal weight across the top bucket, zero elsewhere.
 
     ``w_i = 1 / n_selected`` for the selected names, so gross exposure is exactly 1.0
     on any date where the ranking exists and exactly 0.0 - all cash - on any date
     where it does not.
     """
-    labels = quantile_labels(momentum, n_quantiles)
+    labels = quantile_labels(momentum, n_quantiles, method)
     selected = labels == 0.0
     counts = selected.sum(axis=1)
     weights = selected.astype(float).div(counts.where(counts > 0), axis=0)

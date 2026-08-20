@@ -15,6 +15,12 @@ Experiment 002 - PREREG_002.md, cross-sectional momentum::
     python scripts/run_backtest.py --experiment 002 --noise  # step 3, both variants
     python scripts/run_backtest.py --experiment 002 --validate   # the whole section 7 protocol
 
+Experiment 003 - PREREG_003.md, cross-sectional momentum on US equities::
+
+    python scripts/run_backtest.py --experiment 003          # steps 1-2 and 5-10
+    python scripts/run_backtest.py --experiment 003 --noise  # step 4, both variants
+    python scripts/run_backtest.py --experiment 003 --validate   # the whole section 7 protocol
+
 Experiment 001's headline window starts on the first bar for which every one of the
 twelve instruments has a complete 252-day lookback (2008-02-29). Experiment 002's
 window is not chosen at all: PREREG_002.md section 6 pre-commits 2008-01-01 to
@@ -447,7 +453,10 @@ def cmd_backtest(cfg, args) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
-        "--experiment", default="001", choices=["001", "002"], help="which pre-registration to run"
+        "--experiment",
+        default="001",
+        choices=["001", "002", "003"],
+        help="which pre-registration to run",
     )
     parser.add_argument("--regression", action="store_true", help="experiment 001 refactor gate")
     parser.add_argument("--noise", action="store_true", help="experiment 002 noise tests")
@@ -471,6 +480,10 @@ def main(argv=None) -> int:
         import run_experiment_002  # noqa: PLC0415
 
         return run_experiment_002.main(args)
+    if args.experiment == "003":
+        import run_experiment_003  # noqa: PLC0415
+
+        return run_experiment_003.main(args)
 
     cfg = load_config()
     if args.regression:

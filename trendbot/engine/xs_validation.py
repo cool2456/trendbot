@@ -53,6 +53,7 @@ from .metrics import TRADING_DAYS_PER_YEAR, sharpe
 
 __all__ = [
     "FactorAttribution",
+    "bucket_study",
     "factor_attribution",
     "UniverseVerification",
     "universe_verification",
@@ -333,7 +334,7 @@ class PanelNoiseResult:
 
 
 def panel_noise_test(
-    cfg: Config002,
+    cfg: Config002 | None = None,
     *,
     label: str,
     seeds: Sequence[int] = tuple(range(8)),
@@ -341,41 +342,55 @@ def panel_noise_test(
     correlated: bool = False,
     annual_vol: float = 0.16,
     detail: str = "",
+    universe: Sequence[str] | None = None,
+    strategy=None,
+    cost_bps: float | None = None,
+    gross_cap: float | None = None,
     **generator_kwargs,
 ) -> PanelNoiseResult:
-    """Run the real engine and the real 002 strategy on synthetic data.
+    """Run the real engine and a real ranking strategy on synthetic data.
 
     ``correlated=False`` draws independent walks with
     :func:`trendbot.engine.validation.synthetic_prices`; ``correlated=True`` draws
     common-factor walks with :func:`common_factor_prices`. Both are driftless, so the
     strategy and buy-and-hold must both earn approximately nothing.
+
+    Passing ``cfg`` alone reproduces experiment 002 exactly. Experiment 003 has no
+    ticker list in its document - its universe resolves from an index snapshot - so
+    ``universe``, ``strategy``, ``cost_bps`` and ``gross_cap`` may be supplied instead.
+    The loop, the generators and the engine are the same either way, which is what
+    stops the two experiments' noise tests from drifting apart.
     """
     from .panel_backtest import panel_buy_and_hold, run_panel_backtest  # avoids a cycle
     from .validation import synthetic_prices  # avoids a cycle
 
-    strategy = CrossSectionalMomentum(cfg)
+    if cfg is None and (universe is None or strategy is None or cost_bps is None):
+        raise ValueError(
+            "supply either cfg (experiment 002) or all of universe/strategy/cost_bps"
+        )
+    universe = tuple(universe) if universe is not None else cfg.universe
+    strategy = strategy if strategy is not None else CrossSectionalMomentum(cfg)
+    cost_bps = cost_bps if cost_bps is not None else cfg.cost_bps_per_side
+    gross_cap = gross_cap if gross_cap is not None else cfg.gross_exposure_cap
+
     strat, gross, bh, turnover = [], [], [], []
     for seed in seeds:
-        if correlated:
-            prices = common_factor_prices(
-                cfg.universe, seed=seed, n_days=n_days, annual_vol=annual_vol, **generator_kwargs
-            )
-        else:
-            prices = synthetic_prices(
-                cfg.universe, seed=seed, n_days=n_days, annual_vol=annual_vol, **generator_kwargs
-            )
+        generator = common_factor_prices if correlated else synthetic_prices
+        prices = generator(
+            universe, seed=seed, n_days=n_days, annual_vol=annual_vol, **generator_kwargs
+        )
         result = run_panel_backtest(
             prices,
-            cfg.universe,
+            universe,
             strategy,
-            cost_bps=cfg.cost_bps_per_side,
+            cost_bps=cost_bps,
             drift_band=None,
-            gross_cap=cfg.gross_exposure_cap,
+            gross_cap=gross_cap,
         )
         strat.append(sharpe(result.returns))
         gross.append(sharpe(result.gross_returns))
         turnover.append(result.stats.ann_turnover)
-        bh.append(sharpe(panel_buy_and_hold(prices, cfg.universe)))
+        bh.append(sharpe(panel_buy_and_hold(prices, universe)))
     return PanelNoiseResult(
         label=label,
         seeds=tuple(seeds),
@@ -383,7 +398,7 @@ def panel_noise_test(
         gross_sharpes=tuple(gross),
         buy_and_hold_sharpes=tuple(bh),
         n_days=n_days,
-        cost_bps=cfg.cost_bps_per_side,
+        cost_bps=float(cost_bps),
         mean_turnover=float(np.mean(turnover)),
         detail=detail,
     )
@@ -435,27 +450,39 @@ class FactorAttribution:
 
 
 def factor_attribution(
-    cfg: Config002,
+    cfg: Config002 | None = None,
     *,
     seeds: Sequence[int] = tuple(range(8)),
     n_days: int = 4000,
+    universe: Sequence[str] | None = None,
+    strategy=None,
+    gross_cap: float | None = None,
     **generator_kwargs,
 ) -> FactorAttribution:
     """Regress the rule's daily return on the equal-weight basket, one seed at a time.
 
     Run gross of costs: the question is what the *rule* produces, and a cost drag is
     not a factor loading.
+
+    As with :func:`panel_noise_test`, ``cfg`` alone reproduces experiment 002 and the
+    explicit ``universe``/``strategy`` arguments let experiment 003 - whose universe is
+    not in its document - run the identical diagnostic.
     """
     from .panel_backtest import panel_buy_and_hold, run_panel_backtest  # avoids a cycle
 
-    strategy = CrossSectionalMomentum(cfg)
+    if cfg is None and (universe is None or strategy is None):
+        raise ValueError("supply either cfg (experiment 002) or both universe and strategy")
+    universe = tuple(universe) if universe is not None else cfg.universe
+    strategy = strategy if strategy is not None else CrossSectionalMomentum(cfg)
+    gross_cap = gross_cap if gross_cap is not None else cfg.gross_exposure_cap
+
     rows = []
     for seed in seeds:
-        prices = common_factor_prices(cfg.universe, seed=seed, n_days=n_days, **generator_kwargs)
+        prices = common_factor_prices(universe, seed=seed, n_days=n_days, **generator_kwargs)
         strategy_returns = run_panel_backtest(
-            prices, cfg.universe, strategy, cost_bps=0.0, gross_cap=cfg.gross_exposure_cap
+            prices, universe, strategy, cost_bps=0.0, gross_cap=gross_cap
         ).returns
-        basket = panel_buy_and_hold(prices, cfg.universe)
+        basket = panel_buy_and_hold(prices, universe)
         beta, intercept = np.polyfit(basket.to_numpy(), strategy_returns.to_numpy(), 1)
         rows.append(
             {
@@ -478,14 +505,15 @@ def factor_attribution(
 class QuintileStudy:
     """Forward returns by momentum quintile — section 8's pass/fail criterion."""
 
-    returns: pd.DataFrame  # one column per quintile, one row per rebalance
-    membership: pd.DataFrame  # instrument count per quintile per rebalance
+    returns: pd.DataFrame  # one column per bucket, one row per rebalance
+    membership: pd.DataFrame  # instrument count per bucket per rebalance
     n_quantiles: int
     convention: str
+    label_prefix: str = "Q"
 
     @property
     def labels(self) -> list[str]:
-        return [f"Q{q + 1}" for q in range(self.n_quantiles)]
+        return [f"{self.label_prefix}{q + 1}" for q in range(self.n_quantiles)]
 
     @property
     def mean_monthly(self) -> pd.Series:
@@ -558,6 +586,10 @@ class QuintileStudy:
             }
         )
 
+    @property
+    def spread_name(self) -> str:
+        return f"{self.label_prefix}1-{self.label_prefix}{self.n_quantiles}"
+
     def __str__(self) -> str:
         if self.is_monotonic:
             ordering = "MONOTONIC"
@@ -566,9 +598,91 @@ class QuintileStudy:
                 f"NON-MONOTONIC ({self.n_inversions} of {self.n_quantiles - 1} steps invert)"
             )
         return (
-            f"quintile monotonicity over {len(self.returns)} rebalances: {ordering}, "
-            f"Q1-Q5 spread {self.spread_mean:+.4%}/month (t {self.spread_t_stat:+.2f})"
+            f"bucket monotonicity over {len(self.returns)} rebalances: {ordering}, "
+            f"{self.spread_name} spread {self.spread_mean:+.4%}/month "
+            f"(t {self.spread_t_stat:+.2f})"
         )
+
+
+def bucket_study(
+    prices: PriceData,
+    universe: Sequence[str],
+    *,
+    formation_days: int,
+    skip_days: int,
+    n_quantiles: int,
+    method: str = "floor",
+    label_prefix: str = "Q",
+    start: pd.Timestamp | None = None,
+    end: pd.Timestamp | None = None,
+) -> QuintileStudy:
+    """Section 8's monotonicity gate, for any universe and any number of buckets.
+
+    :func:`quintile_study` is experiment 002's call into this with five buckets;
+    experiment 003 calls it with ten and the ``"even"`` bucket convention. One
+    implementation, so the two experiments' gates cannot disagree about what a bucket
+    is.
+    """
+    from ..xsmom import cross_sectional_momentum  # noqa: PLC0415
+
+    universe = list(universe)
+    close = prices.close[universe]
+    open_ = prices.open[universe]
+    mark_close = close.ffill()
+    mark_open = open_.where(open_.notna(), mark_close.shift(1)).ffill()
+
+    momentum = cross_sectional_momentum(close, formation_days, skip_days)
+    labels = quantile_labels(momentum, n_quantiles, method)
+
+    index = close.index
+    pos = {d: i for i, d in enumerate(index)}
+    rebals = [d for d in rebalance_dates(index) if (start is None or d >= start)]
+    if end is not None:
+        rebals = [d for d in rebals if d <= end]
+
+    open_v = mark_open.to_numpy(dtype=float)
+    label_v = labels.to_numpy(dtype=float)
+
+    rows: list[dict] = []
+    counts: list[dict] = []
+    dates: list[pd.Timestamp] = []
+    skipped = 0
+    for reb, nxt in zip(rebals, rebals[1:]):
+        i, j = pos[reb], pos[nxt]
+        buckets = label_v[i - 1]
+        forward = open_v[j] / open_v[i] - 1.0
+        usable = np.isfinite(buckets) & np.isfinite(forward)
+        if not usable.any():
+            skipped += 1
+            continue
+        row, count = {}, {}
+        for q in range(n_quantiles):
+            member = usable & (buckets == float(q))
+            name = f"{label_prefix}{q + 1}"
+            count[name] = int(member.sum())
+            row[name] = float(forward[member].mean()) if member.any() else np.nan
+        if any(not np.isfinite(v) for v in row.values()):
+            skipped += 1
+            continue
+        rows.append(row)
+        counts.append(count)
+        dates.append(reb)
+
+    columns = [f"{label_prefix}{q + 1}" for q in range(n_quantiles)]
+    idx = pd.DatetimeIndex(dates, name="rebalance")
+    return QuintileStudy(
+        returns=pd.DataFrame(rows, index=idx, columns=columns),
+        membership=pd.DataFrame(counts, index=idx, columns=columns),
+        n_quantiles=n_quantiles,
+        label_prefix=label_prefix,
+        convention=(
+            "sorted on momentum known at the previous close; forward return from the "
+            "open of the rebalance bar to the open of the next rebalance bar; equal "
+            f"weight within each bucket; gross of costs; {method!r} bucket sizing; "
+            f"{len(rebals) - 1 - skipped} of {max(len(rebals) - 1, 0)} rebalance "
+            "intervals measured"
+        ),
+    )
 
 
 def quintile_study(
@@ -589,62 +703,21 @@ def quintile_study(
 
     No negative shift is used anywhere: the forward return is read off consecutive
     rebalance dates by position.
+
+    Experiment 002's parameters, handed to the shared :func:`bucket_study`. Keeping one
+    implementation is what stops 002's five-bucket gate and 003's ten-bucket gate from
+    quietly meaning different things by "a bucket".
     """
-    universe = list(cfg.universe)
-    close = prices.close[universe]
-    open_ = prices.open[universe]
-    mark_close = close.ffill()
-    mark_open = open_.where(open_.notna(), mark_close.shift(1)).ffill()
-
-    momentum = CrossSectionalMomentum(cfg).momentum(
-        {t: pd.DataFrame({"close": close[t]}, index=close.index) for t in universe}
-    )
-    labels = quantile_labels(momentum, cfg.n_quantiles)
-
-    index = close.index
-    pos = {d: i for i, d in enumerate(index)}
-    rebals = [d for d in rebalance_dates(index) if (start is None or d >= start)]
-    if end is not None:
-        rebals = [d for d in rebals if d <= end]
-
-    open_v = mark_open.to_numpy(dtype=float)
-    label_v = labels.to_numpy(dtype=float)
-
-    rows: list[dict] = []
-    counts: list[dict] = []
-    dates: list[pd.Timestamp] = []
-    for reb, nxt in zip(rebals, rebals[1:]):
-        i, j = pos[reb], pos[nxt]
-        # The sort is the one known at the previous close: the same row the engine's
-        # execution lag hands the strategy.
-        buckets = label_v[i - 1]
-        forward = open_v[j] / open_v[i] - 1.0
-        usable = np.isfinite(buckets) & np.isfinite(forward)
-        if not usable.any():
-            continue
-        row, count = {}, {}
-        for q in range(cfg.n_quantiles):
-            member = usable & (buckets == float(q))
-            name = f"Q{q + 1}"
-            count[name] = int(member.sum())
-            row[name] = float(forward[member].mean()) if member.any() else np.nan
-        if any(not np.isfinite(v) for v in row.values()):
-            continue
-        rows.append(row)
-        counts.append(count)
-        dates.append(reb)
-
-    columns = [f"Q{q + 1}" for q in range(cfg.n_quantiles)]
-    idx = pd.DatetimeIndex(dates, name="rebalance")
-    return QuintileStudy(
-        returns=pd.DataFrame(rows, index=idx, columns=columns),
-        membership=pd.DataFrame(counts, index=idx, columns=columns),
+    return bucket_study(
+        prices,
+        cfg.universe,
+        formation_days=cfg.formation_days,
+        skip_days=cfg.skip_days,
         n_quantiles=cfg.n_quantiles,
-        convention=(
-            "sorted on momentum known at the previous close; forward return from the "
-            "open of the rebalance bar to the open of the next rebalance bar; equal "
-            "weight within each quintile; gross of costs"
-        ),
+        method="floor",
+        label_prefix="Q",
+        start=start,
+        end=end,
     )
 
 

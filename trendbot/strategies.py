@@ -24,12 +24,13 @@ import pandas as pd
 
 from .config import Config
 from .config_002 import Config002
+from .config_003 import Config003
 from .engine.panel import Panel, panel_field, validate_panel
 from .signal import trend_signal
 from .sizing import CovarianceMethod, annualised_vol, ewma_covariance, target_weights
-from .xsmom import cross_sectional_momentum, top_quantile_weights
+from .xsmom import BucketMethod, cross_sectional_momentum, top_quantile_weights
 
-__all__ = ["TimeSeriesTrend", "CrossSectionalMomentum"]
+__all__ = ["TimeSeriesTrend", "CrossSectionalMomentum", "EquityCrossSectionalMomentum"]
 
 
 def _covariance_blocks(cov: pd.DataFrame, dates: pd.Index, universe: list[str]):
@@ -146,3 +147,54 @@ class CrossSectionalMomentum:
 
     def __call__(self, panel: Panel) -> pd.DataFrame:
         return top_quantile_weights(self.momentum(panel), self.cfg.n_quantiles)
+
+
+@dataclass(frozen=True, slots=True)
+class EquityCrossSectionalMomentum:
+    """Experiment 003's rule, as a panel strategy.
+
+    Structurally identical to :class:`CrossSectionalMomentum` - PREREG_003.md section 3
+    keeps 002's formula unchanged on purpose, "so that the universe is the only
+    variable" - and differs in exactly three places, all of them parameters rather than
+    logic:
+
+    * the universe is resolved from a dated index snapshot rather than listed in the
+      document, so it arrives as an argument instead of off the config;
+    * the sort is into ten buckets rather than five;
+    * the bucket-size convention is ``"even"`` rather than 002's ``"floor"``. Section 3
+      names no bucket size, and section 8's gate is the D1-D10 spread, so the two ends
+      of the sort are kept the same size. See :mod:`trendbot.xsmom` for the full
+      argument and the sensitivity that is reported alongside the headline.
+
+    Because the rule is the same object with different arguments, a disagreement
+    between 002's and 003's implementations is impossible rather than merely unlikely.
+    """
+
+    cfg: Config003
+    universe: tuple[str, ...]
+    bucket_method: BucketMethod = "even"
+
+    @property
+    def name(self) -> str:
+        return (
+            f"equity cross-sectional momentum (formation {self.cfg.formation_days}d, "
+            f"skip {self.cfg.skip_days}d, top 1/{self.cfg.n_quantiles} of "
+            f"{len(self.universe)}, {self.bucket_method} buckets)"
+        )
+
+    def momentum(self, panel: Panel) -> pd.DataFrame:
+        """The raw ranking variable, exposed for the section 8 decile study."""
+        validate_panel(panel, require=("close",))
+        universe = list(self.universe)
+        close = panel_field(panel, "close")
+        missing = [t for t in universe if t not in close.columns]
+        if missing:
+            raise ValueError(f"panel is missing universe members {missing[:10]}")
+        return cross_sectional_momentum(
+            close[universe], self.cfg.formation_days, self.cfg.skip_days
+        )
+
+    def __call__(self, panel: Panel) -> pd.DataFrame:
+        return top_quantile_weights(
+            self.momentum(panel), self.cfg.n_quantiles, self.bucket_method
+        )

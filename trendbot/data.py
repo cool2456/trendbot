@@ -24,6 +24,7 @@ without a network round trip.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -232,8 +233,22 @@ _VENDORS = {"yahoo": _fetch_yahoo, "alpaca": _fetch_alpaca}
 # --------------------------------------------------------------------------------------
 
 
-def _sanity_check(data: PriceData) -> None:
-    """Refuse obviously corrupt price data rather than backtesting on it."""
+def _sanity_check(data: PriceData, *, max_abs_daily_move: float | None = 0.5) -> None:
+    """Refuse obviously corrupt price data rather than backtesting on it.
+
+    ``max_abs_daily_move`` is calibrated for **broad ETFs**, where a one-day move
+    beyond +/-50% is a bad adjustment and not a market. Experiments 001 and 002 keep
+    that default and are unaffected by this parameter existing.
+
+    A single-stock universe cannot use it. Individual equities really do move more
+    than 50% in a day - a takeover bid, a failed trial, a 2008 bank - so the same
+    threshold would refuse to load a universe that is merely volatile, and raising it
+    to something equities never hit would leave nothing being checked. Passing
+    ``None`` disables *only* this one test and hands the job to an explicit
+    corporate-action audit, which reports every extreme move and reconciles it rather
+    than raising on the first one. The structural checks above - sorted, unique,
+    strictly positive - are not optional and always run.
+    """
     for name, frame in (("open", data.open), ("close", data.close)):
         if frame.index.has_duplicates:
             raise DataError(f"{name} has duplicate dates")
@@ -242,10 +257,11 @@ def _sanity_check(data: PriceData) -> None:
         finite = frame.to_numpy()
         if (finite[~pd.isna(finite)] <= 0).any():
             raise DataError(f"{name} contains a non-positive price")
-    # A single-day move beyond +/-50% in a broad ETF is a bad adjustment, not a market.
+    if max_abs_daily_move is None:
+        return
     moves = data.close.pct_change(fill_method=None).abs()
     stacked = moves.stack(future_stack=True).dropna()
-    bad = stacked[stacked > 0.5]
+    bad = stacked[stacked > max_abs_daily_move]
     if len(bad):
         raise DataError(f"implausible one-day moves, likely a bad split adjustment:\n{bad.head(10)}")
 
@@ -258,14 +274,26 @@ def load_prices(
     end: str | None = None,
     cache: bool = True,
     refresh: bool = False,
+    max_abs_daily_move: float | None = 0.5,
 ) -> PriceData:
-    """Load adjusted daily open/close for ``tickers``, cached to parquet."""
+    """Load adjusted daily open/close for ``tickers``, cached to parquet.
+
+    ``max_abs_daily_move`` is forwarded to :func:`_sanity_check`; see there for why a
+    single-stock universe has to pass ``None`` and what replaces the check.
+    """
     tickers = tuple(tickers)
     if source not in _VENDORS:
         raise DataError(f"unknown source {source!r}; expected one of {sorted(_VENDORS)}")
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    stem = CACHE_DIR / f"{source}_{'-'.join(tickers)}_{start}_{end or 'latest'}"
+    # The cache key names the tickers so a file on disk is self-describing. A 500-name
+    # equity universe blows past every filesystem's name limit, so past a threshold the
+    # list is replaced by a digest of it - still exact, no longer readable. The count
+    # stays in the name so the directory remains navigable, and meta.json always carries
+    # the full list either way.
+    joined = "-".join(tickers)
+    label = joined if len(joined) <= 180 else f"{len(tickers)}names-{hashlib.sha256(joined.encode()).hexdigest()[:16]}"
+    stem = CACHE_DIR / f"{source}_{label}_{start}_{end or 'latest'}"
     meta_path, open_path, close_path = (
         stem.with_suffix(".meta.json"),
         stem.with_suffix(".open.parquet"),
@@ -285,11 +313,11 @@ def load_prices(
         # so it gets the same sanity check as a fresh fetch. A parquet file that was
         # written before a check existed, or edited since, must not be trusted merely
         # because it is on disk.
-        _sanity_check(cached)
+        _sanity_check(cached, max_abs_daily_move=max_abs_daily_move)
         return cached
 
     data = _VENDORS[source](tickers, start, end)
-    _sanity_check(data)
+    _sanity_check(data, max_abs_daily_move=max_abs_daily_move)
 
     if cache:
         data.open.to_parquet(open_path)

@@ -1,0 +1,9 @@
+{
+  "symbol": "SPY",
+  "role": "market proxy for PREREG_003.md section 7.5's beta regression",
+  "rationale": "Section 7.5 says 'market excess returns' and names no index. SPY is the cap-weighted US market and the literal reading of section 8's 'market beta'. It is external to the universe being tested, which the equal-weight benchmark is not.",
+  "alternative_reported_alongside": "equal-weight buy-and-hold of the same universe, the construction experiment 002's factor_attribution used",
+  "adjudicates_section_8": true,
+  "chosen_at": "2026-08-19",
+  "chosen_before_any_regression_was_run": true
+}
