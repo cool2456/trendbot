@@ -21,6 +21,13 @@ Experiment 003 - PREREG_003.md, cross-sectional momentum on US equities::
     python scripts/run_backtest.py --experiment 003 --noise  # step 4, both variants
     python scripts/run_backtest.py --experiment 003 --validate   # the whole section 7 protocol
 
+Experiment 004 - PREREG_004.md, point-in-time universe with delistings::
+
+    python scripts/run_backtest.py --experiment 004 --free-tier   # step 1, the pipeline gate
+    python scripts/run_backtest.py --experiment 004 --noise       # step 4, both variants
+    python scripts/run_backtest.py --experiment 004 --paired      # step 6, the A/B diagnostic
+    python scripts/run_backtest.py --experiment 004 --validate    # the whole section 7 protocol
+
 Experiment 001's headline window starts on the first bar for which every one of the
 twelve instruments has a complete 252-day lookback (2008-02-29). Experiment 002's
 window is not chosen at all: PREREG_002.md section 6 pre-commits 2008-01-01 to
@@ -455,11 +462,14 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--experiment",
         default="001",
-        choices=["001", "002", "003"],
+        choices=["001", "002", "003", "004"],
         help="which pre-registration to run",
     )
     parser.add_argument("--regression", action="store_true", help="experiment 001 refactor gate")
-    parser.add_argument("--noise", action="store_true", help="experiment 002 noise tests")
+    parser.add_argument("--noise", action="store_true", help="experiment 002/003/004 noise tests")
+    parser.add_argument("--free-tier", action="store_true", help="experiment 004 step 1 pipeline gate")
+    parser.add_argument("--paired", action="store_true", help="experiment 004 step 6 A/B diagnostic")
+    parser.add_argument("--refresh", action="store_true", help="refetch vendor data, ignoring cache")
     parser.add_argument("--synthetic", action="store_true", help="section 7 step 1 only")
     parser.add_argument("--validate", action="store_true", help="section 7 steps 1, 3, 4 and 5")
     parser.add_argument("--full-history", action="store_true", help="start at the first bar, not the all-12 date")
@@ -484,6 +494,10 @@ def main(argv=None) -> int:
         import run_experiment_003  # noqa: PLC0415
 
         return run_experiment_003.main(args)
+    if args.experiment == "004":
+        import run_experiment_004  # noqa: PLC0415
+
+        return run_experiment_004.main(args)
 
     cfg = load_config()
     if args.regression:

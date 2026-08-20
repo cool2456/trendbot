@@ -25,12 +25,18 @@ import pandas as pd
 from .config import Config
 from .config_002 import Config002
 from .config_003 import Config003
+from .config_004 import Config004
 from .engine.panel import Panel, panel_field, validate_panel
 from .signal import trend_signal
 from .sizing import CovarianceMethod, annualised_vol, ewma_covariance, target_weights
 from .xsmom import BucketMethod, cross_sectional_momentum, top_quantile_weights
 
-__all__ = ["TimeSeriesTrend", "CrossSectionalMomentum", "EquityCrossSectionalMomentum"]
+__all__ = [
+    "TimeSeriesTrend",
+    "CrossSectionalMomentum",
+    "EquityCrossSectionalMomentum",
+    "PointInTimeMomentum",
+]
 
 
 def _covariance_blocks(cov: pd.DataFrame, dates: pd.Index, universe: list[str]):
@@ -197,4 +203,63 @@ class EquityCrossSectionalMomentum:
     def __call__(self, panel: Panel) -> pd.DataFrame:
         return top_quantile_weights(
             self.momentum(panel), self.cfg.n_quantiles, self.bucket_method
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PointInTimeMomentum:
+    """Experiment 004's rule: the same signal over a universe that changes every month.
+
+    The formula, the decile cut, the weighting and the schedule are byte-identical to
+    experiment 003 - PREREG_004.md section 1 says so explicitly, "so that the data is
+    the only variable". The single difference is that the set of names eligible to be
+    ranked is not a constant tuple but a per-date membership matrix computed by
+    :func:`trendbot.pit_universe.build_pit_universe`.
+
+    **Which bar the universe is evaluated on.** Section 2 says "at each monthly
+    rebalance date t", and section 5 says the fill is at the open of the bar after the
+    signal. Those two can only be made consistent one way: the universe rule and the
+    momentum signal are both evaluated on the *decision bar* - the close before the
+    rebalance - and the trade happens at the next open. Evaluating the rule on the
+    rebalance bar's own close while filling at that bar's open would require knowing
+    the close before the open, which is the lookahead the build order forbids. So
+    ``membership`` is indexed by decision bar, and the engine's single execution shift
+    carries it to the rebalance.
+
+    **Names not in the universe on a date are excluded from that date's ranking**, not
+    assigned a momentum of zero - the same distinction sections 2 and 3 of the previous
+    two experiments turned on, applied here to a set that moves.
+    """
+
+    cfg: Config004
+    membership: pd.DataFrame  # decision bar x permaticker-as-string, boolean
+    bucket_method: BucketMethod = "even"
+
+    @property
+    def name(self) -> str:
+        return (
+            f"point-in-time cross-sectional momentum (formation "
+            f"{self.cfg.formation_days}d, skip {self.cfg.skip_days}d, top "
+            f"1/{self.cfg.n_quantiles} of {self.cfg.universe_size})"
+        )
+
+    def eligible_momentum(self, panel: Panel) -> pd.DataFrame:
+        """Momentum, masked to the point-in-time universe on each decision bar.
+
+        NaN means "not ranked on this date", which covers both "no momentum yet" and
+        "not in the universe today". Both are exclusions from the sort, which is what
+        section 2 and section 4 each ask for.
+        """
+        validate_panel(panel, require=("close",))
+        close = panel_field(panel, "close")
+        momentum = cross_sectional_momentum(
+            close, self.cfg.formation_days, self.cfg.skip_days
+        )
+        mask = self.membership.reindex(index=momentum.index, columns=momentum.columns)
+        mask = mask.fillna(False).astype(bool)
+        return momentum.where(mask)
+
+    def __call__(self, panel: Panel) -> pd.DataFrame:
+        return top_quantile_weights(
+            self.eligible_momentum(panel), self.cfg.n_quantiles, self.bucket_method
         )
