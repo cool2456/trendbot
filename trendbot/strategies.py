@@ -26,6 +26,7 @@ from .config import Config
 from .config_002 import Config002
 from .config_003 import Config003
 from .config_004 import Config004
+from .config_005 import Config005
 from .engine.panel import Panel, panel_field, validate_panel
 from .signal import trend_signal
 from .sizing import CovarianceMethod, annualised_vol, ewma_covariance, target_weights
@@ -36,6 +37,7 @@ __all__ = [
     "CrossSectionalMomentum",
     "EquityCrossSectionalMomentum",
     "PointInTimeMomentum",
+    "CurrencyCrossSectionalMomentum",
 ]
 
 
@@ -262,4 +264,62 @@ class PointInTimeMomentum:
     def __call__(self, panel: Panel) -> pd.DataFrame:
         return top_quantile_weights(
             self.eligible_momentum(panel), self.cfg.n_quantiles, self.bucket_method
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CurrencyCrossSectionalMomentum:
+    """Experiment 005's rule: the same signal over the H.10 currency universe.
+
+    PREREG_005.md section 1 says the signal is "byte-identical to experiments 002, 003
+    and 004. Only the universe changes." So this is
+    :class:`EquityCrossSectionalMomentum` with a different config type and a different
+    universe, and it delegates to the same :func:`~trendbot.xsmom.cross_sectional_momentum`
+    and :func:`~trendbot.xsmom.top_quantile_weights` that produced every previous
+    experiment's positions. A disagreement between the four implementations is
+    impossible rather than merely unlikely.
+
+    **What "P" is here.** The panel's prices are exchange rates normalised to the USD
+    value of one unit of the foreign currency - :mod:`trendbot.fx` guarantees that, and
+    gates on it before this class ever sees them. So ``P(t-21)/P(t-252) - 1`` is the
+    twelve-month-minus-one-month appreciation of the currency against the dollar, which
+    is section 4's signal. If the normalisation were wrong the ranking would be
+    backwards here and nothing in this class could tell.
+
+    **Bucket convention.** ``"even"``, for the reason :mod:`trendbot.xsmom` documents and
+    experiment 003 established: PREREG_005.md section 4 names no bucket size, and
+    section 8's gate is the Q1-Q5 spread, so the two ends of the sort are kept the same
+    size and the gated spread compares like with like. At 22 currencies ``"floor"``
+    would make Q5 half again as wide as Q1, diluting the extreme losers and narrowing
+    the very quantity section 8 tests. The alternative is reported as a sensitivity
+    rather than left unexamined.
+    """
+
+    cfg: Config005
+    universe: tuple[str, ...]
+    bucket_method: BucketMethod = "even"
+
+    @property
+    def name(self) -> str:
+        return (
+            f"currency cross-sectional momentum (formation {self.cfg.formation_days}d, "
+            f"skip {self.cfg.skip_days}d, top 1/{self.cfg.n_quantiles} of "
+            f"{len(self.universe)}, {self.bucket_method} buckets)"
+        )
+
+    def momentum(self, panel: Panel) -> pd.DataFrame:
+        """The raw ranking variable, exposed for the section 8 quintile study."""
+        validate_panel(panel, require=("close",))
+        universe = list(self.universe)
+        close = panel_field(panel, "close")
+        missing = [t for t in universe if t not in close.columns]
+        if missing:
+            raise ValueError(f"panel is missing universe members {missing}")
+        return cross_sectional_momentum(
+            close[universe], self.cfg.formation_days, self.cfg.skip_days
+        )
+
+    def __call__(self, panel: Panel) -> pd.DataFrame:
+        return top_quantile_weights(
+            self.momentum(panel), self.cfg.n_quantiles, self.bucket_method
         )
