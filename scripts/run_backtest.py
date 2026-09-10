@@ -34,6 +34,13 @@ Experiment 005 - PREREG_005.md, cross-sectional currency momentum on H.10 FX rat
     python scripts/run_backtest.py --experiment 005 --noise  # step 4, both variants
     python scripts/run_backtest.py --experiment 005 --validate   # the whole section 7 protocol
 
+Experiment 006 - PREREG_006.md, multi-strategy risk allocation over 001/002/005::
+
+    python scripts/run_backtest.py --experiment 006 --sleeves    # step 1, the reproduction gate
+    python scripts/run_backtest.py --experiment 006 --noise      # step 4, the noise test
+    python scripts/run_backtest.py --experiment 006              # steps 2-3 and 5-10
+    python scripts/run_backtest.py --experiment 006 --validate   # the whole protocol
+
 Experiment 001's headline window starts on the first bar for which every one of the
 twelve instruments has a complete 252-day lookback (2008-02-29). Experiment 002's
 window is not chosen at all: PREREG_002.md section 6 pre-commits 2008-01-01 to
@@ -468,11 +475,14 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--experiment",
         default="001",
-        choices=["001", "002", "003", "004", "005"],
+        choices=["001", "002", "003", "004", "005", "006"],
         help="which pre-registration to run",
     )
     parser.add_argument("--regression", action="store_true", help="experiment 001 refactor gate")
-    parser.add_argument("--noise", action="store_true", help="experiment 002/003/004/005 noise tests")
+    parser.add_argument("--noise", action="store_true", help="experiment 002-006 noise tests")
+    parser.add_argument(
+        "--sleeves", action="store_true", help="experiment 006 step 1, the sleeve reproduction gate"
+    )
     parser.add_argument("--free-tier", action="store_true", help="experiment 004 step 1 pipeline gate")
     parser.add_argument("--paired", action="store_true", help="experiment 004 step 6 A/B diagnostic")
     parser.add_argument("--refresh", action="store_true", help="refetch vendor data, ignoring cache")
@@ -508,6 +518,10 @@ def main(argv=None) -> int:
         import run_experiment_005  # noqa: PLC0415
 
         return run_experiment_005.main(args)
+    if args.experiment == "006":
+        import run_experiment_006  # noqa: PLC0415
+
+        return run_experiment_006.main(args)
 
     cfg = load_config()
     if args.regression:

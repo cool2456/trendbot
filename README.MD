@@ -1,0 +1,1 @@
+An algorithmic day trading bot
