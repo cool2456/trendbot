@@ -1,31 +1,3 @@
-"""Experiment 003's two new diagnostics, and its decision rule.
-
-Everything experiment 002 built is reused rather than reimplemented - the noise
-generators, the engine, the bucket study, ``worst_months`` - through the generalised
-entry points in :mod:`trendbot.engine.xs_validation`. What is genuinely new here is:
-
-1. :func:`market_regression`. PREREG_003.md section 7.5 promotes the market-beta
-   attribution from a diagnostic to **standard equipment**, and section 8 turns it into
-   both a support clause (positive alpha at t > 2) and an abandon clause (negative
-   alpha, whatever the Sharpe). Experiment 002's :func:`factor_attribution` regressed on
-   an equal-weight basket of synthetic instruments across seeds; this regresses one real
-   return series on one real market series and reports the standard errors, which is a
-   different calculation and needs its own implementation.
-
-2. :func:`evaluate_decision_rule_003`. Section 8 gained two clauses over 002's rule -
-   a t-statistic on the spread, and the alpha condition - and relaxed the monotonicity
-   requirement to tolerate one inversion. Encoding that as a fresh function rather than
-   parameterising 002's keeps each experiment's rule readable next to its own document.
-
-**Which series is "the market".** Section 7.5 says "market excess returns" and does not
-name an index. Two readings are defensible: SPY, the cap-weighted market, which is the
-literal reading of "market beta" and the standard CAPM proxy; or the equal-weight
-buy-and-hold of the same universe, which is what 002's diagnostic used and which nets
-out the equal-weighting tilt. **Both are computed and reported. SPY is the headline and
-section 8's clauses are adjudicated on it** - fixed before either number existed, so
-neither can be selected after the fact.
-"""
-
 from __future__ import annotations
 
 import math
@@ -46,25 +18,8 @@ __all__ = [
 ]
 
 
-# --------------------------------------------------------------------------------------
-# section 7.5 - market-beta attribution
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class MarketRegression:
-    """OLS of strategy excess return on market excess return, with standard errors.
-
-    ``r_strategy(t) = alpha + beta * r_market(t) + e(t)``, both series in excess of the
-    same risk-free rate and both daily. ``alpha`` is reported per period and annualised
-    by multiplying by 252, which is the convention used everywhere else in this package.
-
-    The t-statistic on alpha is the plain OLS one. Daily strategy residuals are close
-    enough to serially uncorrelated for this to be the honest simple answer; a
-    Newey-West correction is not applied and its absence is stated rather than hidden,
-    because it would widen the standard error and section 8 turns on ``t > 2``.
-    """
-
     market_label: str
     n_observations: int
     alpha_per_period: float
@@ -81,11 +36,6 @@ class MarketRegression:
         return self.alpha_per_period > 0.0
 
     def clears(self, min_t: float) -> bool:
-        """Section 8's clause: alpha positive AND its t-statistic above ``min_t``.
-
-        A NaN t-statistic - a degenerate fit - never clears; the comparison would be
-        False anyway, and stating it makes that deliberate rather than incidental.
-        """
         return (
             self.alpha_positive
             and math.isfinite(self.alpha_t_stat)
@@ -107,12 +57,6 @@ def market_regression(
     *,
     market_label: str,
 ) -> MarketRegression:
-    """Regress strategy excess return on market excess return.
-
-    Both series are aligned on their shared dates before fitting; a length mismatch is
-    an alignment bug rather than something to paper over with a fill, so the
-    intersection is used and its size reported.
-    """
     frame = pd.concat(
         {"strategy": strategy_excess, "market": market_excess}, axis=1, join="inner"
     ).dropna()
@@ -122,10 +66,6 @@ def market_regression(
 
     y = frame["strategy"].to_numpy(dtype=float)
     x = frame["market"].to_numpy(dtype=float)
-    # A market series with no dispersion makes beta unidentified and the normal
-    # equations singular; numpy would return an arbitrary solution with a NaN standard
-    # error rather than complain. Section 8 abandons on the sign of alpha, so an alpha
-    # whose standard error is NaN must be an error, not a number.
     market_sd = float(np.std(x, ddof=1))
     if market_sd <= max(float(np.max(np.abs(x))), 1.0) * 1e-12:
         raise ValueError(
@@ -143,12 +83,6 @@ def market_regression(
     covariance = residual_variance * np.linalg.inv(design.T @ design)
     alpha_se, beta_se = float(np.sqrt(covariance[0, 0])), float(np.sqrt(covariance[1, 1]))
 
-    # A residual dispersion indistinguishable from floating-point noise makes every
-    # t-statistic here a ratio of one rounding error to another. On an exact linear
-    # relationship that produced alpha = 5e-19 at t = +3.8, which would have cleared
-    # section 8's t > 2 clause on nothing at all. Same convention as
-    # :func:`trendbot.engine.metrics.sharpe`: undefined, therefore NaN, never a large
-    # number that looks like a result.
     scale = float(np.max(np.abs(y))) if n else 0.0
     if math.sqrt(residual_variance) <= max(scale, 1.0) * 1e-12:
         alpha_se = beta_se = float("nan")
@@ -173,15 +107,8 @@ def market_regression(
     )
 
 
-# --------------------------------------------------------------------------------------
-# section 8 - the pre-committed decision rule
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class Decision003:
-    """The verdict, evaluated mechanically against PREREG_003.md section 8."""
-
     strategy_sharpe: float
     benchmark_sharpe: float
     n_inversions: int
@@ -222,28 +149,6 @@ def evaluate_decision_rule_003(
     alpha_annualised: float,
     alpha_t_stat: float,
 ) -> Decision003:
-    """Apply section 8 exactly as written, with no interpretation at the margin.
-
-    Section 8, verbatim::
-
-        Supported only if all four hold:
-        - Net Sharpe (excess of T-bill, 10 bps) exceeds 0.40, AND
-        - Net Sharpe exceeds equal-weight buy-and-hold of the same universe by at
-          least 0.15, AND
-        - Decile monotonicity: forward returns decrease monotonically D1 -> D10,
-          allowing at most one adjacent inversion, with D1-D10 spread positive at
-          t > 2.0, AND
-        - Alpha to market beta is positive with t > 2.0.
-
-        Abandon if any of:
-        - Fails to beat equal-weight buy-and-hold at all, OR
-        - More than one decile inversion, or D1-D10 t-statistic below 1.0, OR
-        - Alpha to market is negative, OR
-        - Net Sharpe below 0.15.
-
-    Comparators follow the document's own words: "exceeds" and "above" are strict,
-    "at least" and "at most" are inclusive, "below" is strict.
-    """
     exceeds_min = strategy_sharpe > cfg.support_min_sharpe
     margin = strategy_sharpe - benchmark_sharpe
     beats_by_margin = margin >= cfg.support_min_sharpe_excess_over_buy_and_hold
@@ -318,7 +223,7 @@ def evaluate_decision_rule_003(
         ),
     )
 
-    if supported and abandon:  # pragma: no cover - section 8 makes this unreachable
+    if supported and abandon:  # pragma: no cover
         verdict = "CONTRADICTORY - the decision rule is internally inconsistent here"
     elif supported:
         verdict = "SUPPORTED"

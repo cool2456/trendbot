@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""Can this account actually hold the strategy?
-
-Whole-share rounding is where a small account stops running the strategy that was
-designed and starts running a different, smaller one - silently. If the target
-dollar allocation for an instrument is less than the price of one share, the
-position is zero, and that sleeve is simply absent from the portfolio. Nothing warns
-you. This script is the warning.
-
-The target weights used here are the section 4 risk-weighted allocation with every
-instrument assumed to be trending - the fully deployed portfolio the pre-registration
-describes. That is the right basis for an affordability question: the point is
-whether the account can hold the designed book at all, not whether it can hold
-whichever subset happens to be switched on this month.
-
-Usage:
-    python scripts/feasibility.py --equity 1000
-    python scripts/feasibility.py --equity 1000 5000 25000 100000 --markdown FEASIBILITY.md
-"""
 
 from __future__ import annotations
 
@@ -40,7 +22,6 @@ from trendbot.sizing import (  # noqa: E402
 
 
 def designed_weights(cfg, history):
-    """Section 4 weights with every instrument trending - the fully deployed book."""
     close = history.close[list(cfg.universe)]
     returns = close.pct_change(fill_method=None)
     sigma = annualised_vol(returns, cfg.ewma_halflife_days)
@@ -73,11 +54,6 @@ def feasibility_table(weights: pd.Series, prices: pd.Series, equity: float) -> p
 
 
 def minimum_viable_equity(weights: pd.Series, prices: pd.Series) -> float:
-    """Smallest account at which every instrument gets at least one share.
-
-    ``shares_i = floor(w_i * E / p_i) >= 1``  requires  ``E >= p_i / w_i`` for every i,
-    so the binding instrument is the one with the largest price-to-weight ratio.
-    """
     active = weights[weights.abs() > 0]
     ratios = prices.reindex(active.index) / active.abs()
     return float(ratios.max())
@@ -148,7 +124,6 @@ def report(cfg, weights, prices, sigma, equity, out=sys.stdout, markdown=False) 
 
 
 def plain_verdict(equity, n_holdable, n_wanted, deployed, min_equity, missing, sleeves_lost, sleeves_total) -> str:
-    """Say what is true, in plain language, without softening it."""
     if not missing:
         return (
             f"**${equity:,.0f} can run this strategy.** All {n_wanted} instruments are holdable and "
@@ -171,7 +146,7 @@ def plain_verdict(equity, n_holdable, n_wanted, deployed, min_equity, missing, s
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser()
     parser.add_argument("--equity", type=float, nargs="+", required=True, help="account size(s) in dollars")
     parser.add_argument("--markdown", type=Path, default=None, help="also write a markdown report here")
     parser.add_argument(

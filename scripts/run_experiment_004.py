@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""PREREG_004.md section 7's protocol, point-in-time cross-sectional momentum.
-
-Driven from ``scripts/run_backtest.py --experiment 004``.
-
-Every reporting choice this file makes that PREREG_004.md does not fix is stated in the
-output as it is made, not left to the reader to reverse-engineer.
-"""
 
 from __future__ import annotations
 
@@ -40,15 +33,11 @@ from trendbot.strategies import PointInTimeMomentum
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
-# Reporting choices, not strategy parameters. Section 6's frozen list contains none of
-# them and none can change a position.
 DEFAULT_NOISE_SEEDS = 8
 NOISE_UNIVERSE_SIZE = 60
 FACTOR_SHARES = (0.25, 0.5)
 WORST_MONTHS = 5
 BUCKET_METHOD = "even"
-# Per-period Sharpes of the three configurations already tried, for the four-trial
-# deflation term. Outputs of 002 and 003, recorded in their findings documents.
 EXPERIMENT_002_NET_SHARPE = 0.4631
 EXPERIMENT_003_NET_SHARPE = 0.6988
 
@@ -57,26 +46,8 @@ def rule(title: str) -> None:
     print(f"\n{'=' * 78}\n{title}\n{'=' * 78}")
 
 
-# --------------------------------------------------------------------------------------
-# the equal-weight point-in-time benchmark
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class PointInTimeEqualWeight:
-    """Section 8's benchmark: equal weight across the whole point-in-time universe.
-
-    Experiments 001-003 read "equal-weight buy-and-hold" literally - buy once, never
-    trade - because their universes were fixed lists. That construction has no meaning
-    here: a universe defined by a rule at each date has no single basket to buy once,
-    and its members delist. The only coherent reading of "buy-and-hold of the same
-    point-in-time universe" is *hold all of it, equally weighted, as the rule defines
-    it each month*, which is what this does. Its turnover is forced by the universe
-    rule rather than chosen by a strategy, so it is run at zero cost, exactly as the
-    zero-turnover benchmarks of 001-003 were. The cost-paying variant is reported as a
-    sensitivity so the choice is visible.
-    """
-
     membership: pd.DataFrame
 
     @property
@@ -94,15 +65,8 @@ class PointInTimeEqualWeight:
         return mask.astype(float).div(counts.where(counts > 0), axis=0).fillna(0.0)
 
 
-# --------------------------------------------------------------------------------------
-# data assembly
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class Pipeline:
-    """Everything one arm of section 10's paired diagnostic needs."""
-
     arm: str
     master: object
     panels_raw: dict
@@ -114,14 +78,6 @@ class Pipeline:
 
 
 def _decision_bars(calendar: pd.DatetimeIndex) -> tuple[pd.DatetimeIndex, pd.DatetimeIndex]:
-    """The bar each rebalance decides on, and the rebalance bars themselves.
-
-    Section 2 evaluates its rule "at each monthly rebalance date t" and section 5 fills
-    at the open of the bar after the signal. Those reconcile only one way: rule and
-    signal are both read off the close before the rebalance, and the trade happens at
-    the next open. Reading the rule off the rebalance bar's own close while filling at
-    that bar's open would need the close before the open.
-    """
     rebalances = rebalance_dates(calendar)
     positions = {d: i for i, d in enumerate(calendar)}
     decisions = pd.DatetimeIndex([calendar[positions[d] - 1] for d in rebalances])
@@ -137,13 +93,6 @@ def load_pipeline(
     rf: pd.Series | None = None,
     survivors_asof: pd.Timestamp | None = None,
 ) -> Pipeline:
-    """Build one arm: (A) point-in-time with delistings, (B) survivors only.
-
-    ``rf`` is the *annualised* risk-free series. It is aligned to the trading calendar
-    here rather than passed in already aligned, because the calendar is only known once
-    the price table has been read - and requiring an aligned series would force every
-    caller to build the whole pipeline twice just to learn the dates.
-    """
     tickers_table = client.security_master()
     actions_table = client.actions()
     master = build_security_master(tickers_table, actions_table)
@@ -194,11 +143,6 @@ def load_pipeline(
     )
 
 
-# --------------------------------------------------------------------------------------
-# step 1 - free-tier validation
-# --------------------------------------------------------------------------------------
-
-
 def cmd_free_tier(cfg: Config004, args) -> int:
     rule("STEP 1 - FREE-TIER PIPELINE VALIDATION (section 7.2)")
     print(
@@ -244,11 +188,6 @@ def cmd_free_tier(cfg: Config004, args) -> int:
     return 0 if fixture_ok else 1
 
 
-# --------------------------------------------------------------------------------------
-# steps 2 and 3 - universe construction and delisting audits
-# --------------------------------------------------------------------------------------
-
-
 def report_universe(cfg: Config004, pipeline: Pipeline) -> None:
     rule(f"STEP 2 - UNIVERSE CONSTRUCTION, ARM {pipeline.arm} (section 2)")
     universe = pipeline.universe
@@ -286,7 +225,6 @@ def report_universe(cfg: Config004, pipeline: Pipeline) -> None:
         print("  (reported, never merged - the panel is keyed on the permanent ID)")
         print(reused.head(8).to_string(index=False))
 
-    # THE STEP 2 GATE
     violations = []
     for date in universe.membership.index:
         for permaticker in universe.members(date):
@@ -332,11 +270,6 @@ def report_delistings(cfg: Config004, pipeline: Pipeline) -> pd.DataFrame:
     if not disagree.empty:
         print(disagree.head(8).to_string(index=False))
     return checked
-
-
-# --------------------------------------------------------------------------------------
-# step 4 - noise tests
-# --------------------------------------------------------------------------------------
 
 
 def cmd_noise(cfg: Config004, args) -> int:
@@ -420,11 +353,6 @@ def cmd_noise(cfg: Config004, args) -> int:
     return 0 if passed else 1
 
 
-# --------------------------------------------------------------------------------------
-# steps 5, 7, 8 - the backtest for one arm
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class ArmResult:
     arm: str
@@ -448,7 +376,6 @@ def run_arm(
     cost_bps: float | None = None,
     label: str = "",
 ) -> ArmResult:
-    """Steps 5, 7 and 8 for one arm of section 10's pair."""
     universe = pipeline.universe
     if universe.start_date is None:
         raise ValueError("section 6's start rule was never satisfied; nothing to backtest")
@@ -457,8 +384,6 @@ def run_arm(
     members = [str(p) for p in universe.all_members()]
 
     membership = universe.membership.reindex(columns=members).fillna(False)
-    # Membership is defined on decision bars only; every other bar is False, which is
-    # correct - the engine reads the decision bar and nothing else.
     full = pd.DataFrame(False, index=pipeline.prices.close.index, columns=members)
     full.loc[membership.index, membership.columns] = membership.to_numpy()
 
@@ -536,13 +461,7 @@ def run_arm(
     )
 
 
-# --------------------------------------------------------------------------------------
-# steps 5-11 - the full protocol, both arms
-# --------------------------------------------------------------------------------------
-
-
 def _psr(cfg: Config004, returns: pd.Series):
-    """PSR(0) and the deflated Sharpe at the cumulative counter of 4 configurations."""
     own = float(returns.mean()) / float(returns.std(ddof=1))
     root = math.sqrt(TRADING_DAYS_PER_YEAR)
     trials = (
@@ -581,7 +500,6 @@ def report_arm(cfg: Config004, arm: ArmResult, *, header: str) -> None:
 
 
 def cmd_paired(cfg: Config004, args) -> int:
-    """STEP 6 / SECTION 10 - the paired diagnostic. Required regardless of verdict."""
     client = SharadarClient.from_env()
     rf = load_risk_free_rate()
 
@@ -645,7 +563,6 @@ def cmd_paired(cfg: Config004, args) -> int:
 
 
 def cmd_validate(cfg: Config004, args) -> int:
-    """The whole of section 7, in order."""
     status = cmd_free_tier(cfg, args)
     if status != 0:
         print("\nSTEP 1 GATE FAILED - refusing to continue.")

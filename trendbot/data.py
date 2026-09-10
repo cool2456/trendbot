@@ -1,26 +1,3 @@
-"""Price history for the research path.
-
-Nothing in :mod:`tests` imports this module: the test suite is entirely offline and
-runs on fixtures. This is the only place in the package that touches a price vendor.
-
-Two sources, used for two different jobs:
-
-``yahoo``
-    Split- and dividend-adjusted OHLC via ``yfinance``, going back to each ETF's
-    inception (SPY 1993, the last of the twelve 2007). Used for the backtest,
-    because a momentum signal on TLT/IEF/VNQ computed on price-only series would be
-    measuring something other than the return an investor earns.
-
-``alpaca``
-    The broker's own adjusted bars. Correct for the live path and for feasibility
-    (an affordability calculation must use the price you would actually pay), but
-    the market-data plan floors history at 2016-01-04 for every symbol, which is
-    too short for the section 7 protocol.
-
-Both are cached to parquet under ``data/cache`` so a backtest is reproducible
-without a network round trip.
-"""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -48,13 +25,11 @@ ALPACA_DATA_URL = "https://data.alpaca.markets"
 
 
 class DataError(RuntimeError):
-    """Raised when price data cannot be obtained or fails a sanity check."""
+    pass
 
 
 @dataclass(frozen=True, slots=True)
 class PriceData:
-    """Adjusted OHLC for a fixed universe, on a shared trading-day calendar."""
-
     open: pd.DataFrame
     close: pd.DataFrame
     source: str
@@ -91,13 +66,7 @@ class PriceData:
         )
 
 
-# --------------------------------------------------------------------------------------
-# environment / credentials
-# --------------------------------------------------------------------------------------
-
-
 def read_dotenv(path: Path | None = None) -> dict[str, str]:
-    """Read KEY=VALUE pairs from .env. Absent file yields an empty mapping."""
     path = path or (REPO_ROOT / ".env")
     values: dict[str, str] = {}
     if not path.is_file():
@@ -112,7 +81,6 @@ def read_dotenv(path: Path | None = None) -> dict[str, str]:
 
 
 def alpaca_credentials() -> tuple[str, str]:
-    """Alpaca paper key/secret from the environment, falling back to .env."""
     env = {**read_dotenv(), **os.environ}
     key, secret = env.get("ALPACA_KEY"), env.get("ALPACA_SECRET")
     if not key or not secret:
@@ -128,15 +96,10 @@ def alpaca_credentials() -> tuple[str, str]:
     return key, secret
 
 
-# --------------------------------------------------------------------------------------
-# vendors
-# --------------------------------------------------------------------------------------
-
-
 def _fetch_yahoo(tickers: tuple[str, ...], start: str, end: str | None) -> PriceData:
     try:
-        import yfinance  # noqa: PLC0415  (optional research-only dependency)
-    except ImportError as exc:  # pragma: no cover - depends on the install extra
+        import yfinance  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover
         raise DataError(
             "yfinance is not installed. Install the research extra: "
             "pip install -e '.[research]'"
@@ -146,7 +109,7 @@ def _fetch_yahoo(tickers: tuple[str, ...], start: str, end: str | None) -> Price
         list(tickers),
         start=start,
         end=end,
-        auto_adjust=True,  # split- AND dividend-adjusted OHLC
+        auto_adjust=True,
         progress=False,
         threads=True,
         group_by="column",
@@ -184,7 +147,7 @@ def _fetch_alpaca(tickers: tuple[str, ...], start: str, end: str | None) -> Pric
             params = {
                 "timeframe": "1Day",
                 "start": start,
-                "adjustment": "all",  # splits and dividends
+                "adjustment": "all",
                 "feed": "sip",
                 "limit": 10_000,
             }
@@ -228,27 +191,7 @@ def _fetch_alpaca(tickers: tuple[str, ...], start: str, end: str | None) -> Pric
 _VENDORS = {"yahoo": _fetch_yahoo, "alpaca": _fetch_alpaca}
 
 
-# --------------------------------------------------------------------------------------
-# public loader
-# --------------------------------------------------------------------------------------
-
-
 def _sanity_check(data: PriceData, *, max_abs_daily_move: float | None = 0.5) -> None:
-    """Refuse obviously corrupt price data rather than backtesting on it.
-
-    ``max_abs_daily_move`` is calibrated for **broad ETFs**, where a one-day move
-    beyond +/-50% is a bad adjustment and not a market. Experiments 001 and 002 keep
-    that default and are unaffected by this parameter existing.
-
-    A single-stock universe cannot use it. Individual equities really do move more
-    than 50% in a day - a takeover bid, a failed trial, a 2008 bank - so the same
-    threshold would refuse to load a universe that is merely volatile, and raising it
-    to something equities never hit would leave nothing being checked. Passing
-    ``None`` disables *only* this one test and hands the job to an explicit
-    corporate-action audit, which reports every extreme move and reconciles it rather
-    than raising on the first one. The structural checks above - sorted, unique,
-    strictly positive - are not optional and always run.
-    """
     for name, frame in (("open", data.open), ("close", data.close)):
         if frame.index.has_duplicates:
             raise DataError(f"{name} has duplicate dates")
@@ -276,21 +219,11 @@ def load_prices(
     refresh: bool = False,
     max_abs_daily_move: float | None = 0.5,
 ) -> PriceData:
-    """Load adjusted daily open/close for ``tickers``, cached to parquet.
-
-    ``max_abs_daily_move`` is forwarded to :func:`_sanity_check`; see there for why a
-    single-stock universe has to pass ``None`` and what replaces the check.
-    """
     tickers = tuple(tickers)
     if source not in _VENDORS:
         raise DataError(f"unknown source {source!r}; expected one of {sorted(_VENDORS)}")
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    # The cache key names the tickers so a file on disk is self-describing. A 500-name
-    # equity universe blows past every filesystem's name limit, so past a threshold the
-    # list is replaced by a digest of it - still exact, no longer readable. The count
-    # stays in the name so the directory remains navigable, and meta.json always carries
-    # the full list either way.
     joined = "-".join(tickers)
     label = joined if len(joined) <= 180 else f"{len(tickers)}names-{hashlib.sha256(joined.encode()).hexdigest()[:16]}"
     stem = CACHE_DIR / f"{source}_{label}_{start}_{end or 'latest'}"
@@ -309,10 +242,6 @@ def load_prices(
             adjusted=meta["adjusted"],
             fetched_at=meta["fetched_at"],
         )
-        # A cache read is the path every backtest in this repository actually takes,
-        # so it gets the same sanity check as a fresh fetch. A parquet file that was
-        # written before a check existed, or edited since, must not be trusted merely
-        # because it is on disk.
         _sanity_check(cached, max_abs_daily_move=max_abs_daily_move)
         return cached
 
@@ -338,16 +267,6 @@ def load_prices(
 
 
 def last_trade_prices(tickers: tuple[str, ...] | list[str], *, lookback_days: int = 10) -> pd.Series:
-    """Latest *unadjusted* daily close per ticker, from the broker's own feed.
-
-    Feasibility is an affordability question, so it must use the price actually
-    quoted in the market (``adjustment=raw``), not a back-adjusted research series.
-
-    The free Alpaca market-data plan refuses SIP data inside a 15-minute recency
-    window, so this asks for the last completed session rather than a live quote.
-    That is the right price for a monthly rebalance anyway: the decision is made on
-    a close.
-    """
     import requests  # noqa: PLC0415
 
     key, secret = alpaca_credentials()
@@ -390,27 +309,6 @@ def load_risk_free_rate(
     cache: bool = True,
     refresh: bool = False,
 ) -> pd.Series:
-    """Daily 13-week US Treasury bill rate, annualised, as a decimal fraction.
-
-    PREREGISTRATION.md section 4 mandates a cash account with gross exposure capped
-    at 1.0, so the book carries a large and time-varying idle cash balance - about
-    30% on average. Neither document says whether that cash earns anything, and it
-    plainly would. This series is used for two things, symmetrically:
-
-    * uninvested cash accrues at this rate inside the engine, and
-    * Sharpe is computed in excess of this same rate, for the strategy **and** for
-      the section 8 equal-weight buy-and-hold benchmark.
-
-    Doing only the first would credit the strategy with cash income while charging
-    it no opportunity cost, which inflates the Sharpe of a partly-invested book by
-    0.2-0.4 against a fully-invested benchmark.
-
-    Source is ``^IRX``, which is a *discount* rate rather than a bond-equivalent
-    yield; at 13 weeks and 4% the two differ by a basis point or two, which is far
-    below the resolution of anything decided here. Values are forward-filled across
-    market holidays and converted to a daily accrual by simple division by 252,
-    matching the annualisation convention used everywhere else in the package.
-    """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path = CACHE_DIR / f"riskfree_IRX_{start}_{end or 'latest'}.parquet"
     if cache and not refresh and path.is_file():
@@ -437,7 +335,6 @@ def load_risk_free_rate(
 
 
 def daily_risk_free(rate: pd.Series, index: pd.DatetimeIndex) -> pd.Series:
-    """Align an annualised rate series to a trading calendar as a per-day accrual."""
     aligned = rate.reindex(index.union(rate.index)).ffill().reindex(index)
     if aligned.isna().any():
         aligned = aligned.bfill()

@@ -1,28 +1,3 @@
-"""Parse PREREG_004.md into a frozen configuration object.
-
-Same contract as the three parsers before it: the pre-registration is the sole source
-of truth, every parameter is *pulled* out of the text, and a missing, ambiguous or
-self-contradictory value is a fatal :class:`~trendbot.config.ConfigParseError` rather
-than a silent default.
-
-What is new in this document, and therefore new in this parser
---------------------------------------------------------------
-Experiment 003's universe was a rule resolved against a dated index snapshot. This
-one is a rule resolved **at every rebalance date** out of price and volume alone, so
-what the parser extracts from section 2 is the rule's *parameters* - the name count,
-the liquidity window, the price floor, the history requirement - rather than anything
-resembling a list.
-
-Section 3 is also new and is the largest degree of freedom in the experiment: a table
-mapping a vendor delist reason to a return. It is parsed as a table, with the
-sensitivity ladder parsed alongside it, so that the treatment cannot be quietly
-changed without changing the document's content hash.
-
-Section 6 is a rule too. The start date is *not* in the document - it is whatever
-the section 2 rule first yields 500 qualifying names on - so this parser deliberately
-carries no start date at all. Anything that wants one has to compute it and report it.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -43,16 +18,12 @@ __all__ = [
 
 _PREREG_NAME = "PREREG_004.md"
 
-# The three buckets section 3's table maps onto. These are *our* names for the rows,
-# not the vendor's; the mapping from a vendor reason string to one of these lives in
-# trendbot.sharadar, which is the only module that should know a vendor's vocabulary.
 BANKRUPTCY = "bankruptcy"
 ACQUISITION = "acquisition"
 UNKNOWN = "unknown"
 
 
 def find_preregistration_004(start: Path | None = None) -> Path:
-    """Locate PREREG_004.md by walking up from ``start`` (default: this file)."""
     here = (start or Path(__file__).resolve()).resolve()
     for parent in [here, *here.parents]:
         candidate = parent / _PREREG_NAME if parent.is_dir() else parent.parent / _PREREG_NAME
@@ -66,22 +37,13 @@ def find_preregistration_004(start: Path | None = None) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class DelistTreatment:
-    """Section 3's table: what return a held position is assigned when it delists."""
-
-    acquisition_return: float | None  # None == "final traded price", i.e. no haircut
+    acquisition_return: float | None
     bankruptcy_return: float
     unknown_return: float
-    sensitivity_alternatives: tuple[float, ...]  # the two values section 3 names
-    sensitivity_returns: tuple[float, ...]  # those two plus the headline, sorted
+    sensitivity_alternatives: tuple[float, ...]
+    sensitivity_returns: tuple[float, ...]
 
     def assigned_return(self, bucket: str, *, unknown_override: float | None = None) -> float:
-        """The return to assign, per section 3, for one delisting.
-
-        ``unknown_override`` exists only for section 3's mandatory sensitivity ladder.
-        It moves the *unknown* bucket and nothing else; bankruptcy stays at -100% and
-        an acquisition still pays out at its final traded price, because neither of
-        those is the degree of freedom section 3 says must be shown.
-        """
         if bucket == ACQUISITION:
             return 0.0 if self.acquisition_return is None else self.acquisition_return
         if bucket == BANKRUPTCY:
@@ -100,9 +62,6 @@ class DelistTreatment:
 
 @dataclass(frozen=True, slots=True)
 class Config004:
-    """Every frozen parameter of the point-in-time momentum test, from PREREG_004.md."""
-
-    # provenance
     source_path: Path
     source_sha256: str
     committed_on: str
@@ -110,7 +69,6 @@ class Config004:
     signed_date: str
     configurations_tried: int
 
-    # section 2 - the universe rule
     universe_size: int
     liquidity_window_days: int
     price_floor: float
@@ -118,26 +76,21 @@ class Config004:
     adrs_included: bool
     excluded_types: tuple[str, ...]
 
-    # section 3 - delisting
     delisting: DelistTreatment
 
-    # section 4 - the signal
     formation_days: int
     skip_days: int
     n_quantiles: int
     long_only: bool
 
-    # section 5 - risk scaling and execution
     gross_exposure_cap: float
     rebalance: str
     cost_bps_per_side: float
     cost_sensitivity_bps: tuple[float, ...]
     requires_point_in_time_adjustment: bool
 
-    # section 6 - the sample window RULE. There is deliberately no start date here.
     start_rule_min_names: int
 
-    # section 8 - the decision rule
     market_proxy_symbol: str
     support_min_sharpe: float
     support_min_sharpe_excess_over_buy_and_hold: float
@@ -147,7 +100,6 @@ class Config004:
     abandon_below_sharpe: float
     abandon_below_spread_t_stat: float
 
-    # section 9 - expectations of record
     expected_sharpe_low: float
     expected_sharpe_high: float
     bug_threshold_sharpe: float
@@ -203,10 +155,6 @@ class Config004:
             raise ConfigParseError(
                 f"section 3 maps bankruptcy to {self.delisting.bankruptcy_return}, not -100%"
             )
-        # Section 3's ladder is "the headline, plus the two alternatives it names". If the
-        # headline coincides with one of the alternatives the ladder silently collapses
-        # from three points to two and stops showing the size of the choice, which is
-        # the one thing section 3 says it is mandatory for.
         ladder = self.delisting.sensitivity_returns
         if len(set(ladder)) != len(self.delisting.sensitivity_alternatives) + 1:
             raise ConfigParseError(
@@ -250,7 +198,6 @@ _MONTHS = {
 
 
 def _parse_delisting(s3: str) -> DelistTreatment:
-    """Section 3's table, read as a table rather than as three separate greps."""
     rows: dict[str, str] = {}
     for line in s3.splitlines():
         line = line.strip()
@@ -328,7 +275,6 @@ def _parse_text(text: str, source_path: Path) -> Config004:
         ).group(1)
     )
 
-    # ---- section 2: the universe rule -------------------------------------------------
     rule = _require_unique(
         r"\*\*The (\d+) US common stocks with the highest median dollar volume over the "
         r"trailing\s*\n?(\d+) trading days\*\*",
@@ -343,8 +289,6 @@ def _parse_text(text: str, source_path: Path) -> Config004:
             "the price floor",
         ).group(1)
     )
-    # "Unadjusted" is load-bearing: the floor applied to today's adjusted price would be
-    # a lookahead. Asserted so that removing the word is a parse error.
     min_history = int(
         _require_unique(
             r"At least (?:\*\*)?(\d+)(?:\*\*)? trading days of price history as of date t",
@@ -365,10 +309,8 @@ def _parse_text(text: str, source_path: Path) -> Config004:
         r"not yet delisted", s2, "section 2's tradeable-on-date-t requirement"
     )
 
-    # ---- section 3: delisting ---------------------------------------------------------
     delisting = _parse_delisting(s3)
 
-    # ---- section 4: the signal --------------------------------------------------------
     formula = _require_unique(
         r"momentum_i\(t\)\s*=\s*P_i\(t-(\d+)\)\s*/\s*P_i\(t-(\d+)\)\s*-\s*1",
         s4,
@@ -383,7 +325,6 @@ def _parse_text(text: str, source_path: Path) -> Config004:
     if not long_only:
         raise ConfigParseError("section 4 no longer declares the strategy long-only")
 
-    # ---- section 5: risk scaling and execution ----------------------------------------
     gross_cap = float(
         _require_unique(
             r"Gross exposure\s*(\d+(?:\.\d+)?)\s*when invested", s5, "gross exposure"
@@ -410,7 +351,6 @@ def _parse_text(text: str, source_path: Path) -> Config004:
     if not requires_pit:
         raise ConfigParseError("section 5 no longer requires point-in-time adjustment")
 
-    # ---- section 6: the start RULE, not a date ----------------------------------------
     start_rule = _require_unique(
         r"\*\*Start:\*\*\s*the earliest month at which the .2 rule yields at least "
         r"(\d+)\s*qualifying\s*\n?\s*names",
@@ -418,14 +358,12 @@ def _parse_text(text: str, source_path: Path) -> Config004:
         "section 6's start rule",
     )
     start_min_names = int(start_rule.group(1))
-    # If this ever parses to a literal date, the window has stopped being a rule.
     if re.search(r"\*\*Start:\*\*\s*\d{4}-\d{2}-\d{2}", s6):
         raise ConfigParseError(
             "section 6 now names a start date. The window is supposed to be a rule whose "
             "answer depends on vendor coverage; a date here would be a chosen window."
         )
 
-    # ---- section 8: the decision rule -------------------------------------------------
     support_sharpe = float(
         _require_unique(
             r"Net Sharpe \(excess of T-bill, \d+ bps\) exceeds\s*\*\*(\d+(?:\.\d+)?)\*\*",
@@ -452,10 +390,6 @@ def _parse_text(text: str, source_path: Path) -> Config004:
             "the spread t-statistic support threshold",
         ).group(1)
     )
-    # The index section 8 names is CAPTURED, not assumed. Two reasons: the document is
-    # the source of truth for which series "alpha" is measured against, and a literal
-    # ticker in this file would be a universe member inlined outside the parser, which
-    # tests/test_repo_invariants.py bans for good reason.
     alpha_clause = _require_unique(
         r"\*\*Alpha to ([A-Z]{1,5}) is positive with t\s*>\s*(\d+(?:\.\d+)?)\.\*\*",
         s8,
@@ -479,15 +413,12 @@ def _parse_text(text: str, source_path: Path) -> Config004:
         (r"more than one inversion", "the inversion-count abandon clause"),
     ):
         _require_unique(clause, s8, what)
-    # Section 8's closing paragraph is the one that makes a size effect reportable rather
-    # than ignorable. It carries no number, so its presence is asserted.
     _require_unique(
         r"evidence of a\s+size effect rather than momentum",
         s8,
         "section 8's size-effect reporting clause",
     )
 
-    # ---- section 9: expectations of record --------------------------------------------
     exp = _require_unique(
         r"Realistic net Sharpe:\s*\*\*(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)\*\*",
         s9,
@@ -522,8 +453,6 @@ def _parse_text(text: str, source_path: Path) -> Config004:
             "which is the clause that decides whether a verdict may be reported at all"
         )
 
-    # ---- section 10: the paired diagnostic is a required output ------------------------
-    # In the section HEADING, not its body, so this searches the whole document.
     _require_unique(
         r"required output regardless of verdict", text, "section 10's unconditional requirement"
     )
@@ -580,7 +509,6 @@ _CACHE: dict[Path, Config004] = {}
 
 
 def load_config_004(path: Path | str | None = None, *, use_cache: bool = True) -> Config004:
-    """Parse PREREG_004.md into a frozen :class:`Config004`."""
     resolved = Path(path).resolve() if path is not None else find_preregistration_004()
     if use_cache and resolved in _CACHE:
         return _CACHE[resolved]

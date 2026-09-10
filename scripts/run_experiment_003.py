@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""PREREG_003.md section 7's protocol, equity cross-sectional momentum.
-
-Driven from ``scripts/run_backtest.py --experiment 003``.
-
-Every reporting choice this file makes that PREREG_003.md does not fix is stated in
-the output as it is made, not left to the reader to reverse-engineer.
-"""
 
 from __future__ import annotations
 
@@ -48,17 +41,14 @@ from trendbot.strategies import EquityCrossSectionalMomentum
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
-# Reporting choices, not strategy parameters. Section 6's frozen list contains none of
-# them and none can change a position.
 DEFAULT_NOISE_SEEDS = 8
-NOISE_UNIVERSE_SIZE = 60  # synthetic panels this wide keep the noise test minutes, not hours
+NOISE_UNIVERSE_SIZE = 60
 FACTOR_SHARES = (0.25, 0.5)
 WORST_MONTHS = 5
-EXTREME_MOVE_THRESHOLD = 0.35  # the build order's ±35% scan
-ACTION_DATE_THRESHOLD = 0.20  # a move this large ON an action date is a broken adjustment
+EXTREME_MOVE_THRESHOLD = 0.35
+ACTION_DATE_THRESHOLD = 0.20
 BUCKET_METHOD = "even"
 BUCKET_METHOD_ALTERNATIVE = "floor"
-# Experiment 002's per-period Sharpe, needed for the three-trial deflation term.
 EXPERIMENT_002_NET_SHARPE = 0.4631
 
 
@@ -66,20 +56,7 @@ def rule(title: str) -> None:
     print(f"\n{'=' * 78}\n{title}\n{'=' * 78}")
 
 
-# --------------------------------------------------------------------------------------
-# shared setup
-# --------------------------------------------------------------------------------------
-
-
 def _last_complete_session(index: pd.DatetimeIndex) -> pd.Timestamp:
-    """The last bar that is certainly a settled close.
-
-    A vendor asked for daily bars during a live session returns a provisional bar for
-    today, whose "close" is whatever the last print happened to be. Trading on it would
-    be trading on an intraday snapshot dressed as a close, so the window ends at the
-    last bar strictly before today. Section 6's window is "to present"; this is what
-    present means when the market is open.
-    """
     today = pd.Timestamp.today().normalize()
     earlier = index[index < today]
     if len(earlier) == 0:
@@ -93,25 +70,15 @@ def load_everything(cfg: Config003, source: str, *, refresh_actions: bool = Fals
         snapshot.symbols,
         source=source,
         start="2005-01-01",
-        max_abs_daily_move=None,  # replaced by the explicit corporate-action audit
+        max_abs_daily_move=None,
     )
     end = _last_complete_session(prices.close.index)
-    # Truncated here, once, rather than sliced at each reporting call. Leaving the
-    # provisional bar in the panel and slicing it out downstream is how the headline
-    # Sharpe ended up covering 4,687 bars while the benchmark and the cost ladder
-    # covered 4,686: the strategy was being credited with a day the benchmark never saw.
-    # The engine must simply never be shown a bar that is not a settled close.
     prices = prices.slice(None, str(end.date()))
     universe = resolve_universe(
         prices, snapshot, required_from=cfg.universe_history_required_from, window_end=end
     )
     rf = load_risk_free_rate()
     return snapshot, prices, universe, end, rf, daily_risk_free(rf, prices.close.index)
-
-
-# --------------------------------------------------------------------------------------
-# step 1 - universe construction
-# --------------------------------------------------------------------------------------
 
 
 def report_universe(cfg: Config003, snapshot, universe, end) -> None:
@@ -177,11 +144,6 @@ def report_universe(cfg: Config003, snapshot, universe, end) -> None:
             "can be applied to a number."
         )
         print(holes.value_counts().sort_index().rename("names").to_frame().T.to_string())
-
-
-# --------------------------------------------------------------------------------------
-# step 2 - corporate action audit (gates everything downstream)
-# --------------------------------------------------------------------------------------
 
 
 def report_corporate_actions(cfg: Config003, prices, universe, end, *, refresh: bool = False):
@@ -308,11 +270,6 @@ def report_corporate_actions(cfg: Config003, prices, universe, end, *, refresh: 
     return audit, reconciliation, contaminated, invariance, convention, gate
 
 
-# --------------------------------------------------------------------------------------
-# step 4 - noise tests
-# --------------------------------------------------------------------------------------
-
-
 def cmd_noise(cfg: Config003, args) -> int:
     rule("STEP 4 / SECTION 7.1 - NOISE TESTS, BOTH VARIANTS")
     print(
@@ -399,11 +356,6 @@ def cmd_noise(cfg: Config003, args) -> int:
     return 0 if passed else 1
 
 
-# --------------------------------------------------------------------------------------
-# steps 5-10
-# --------------------------------------------------------------------------------------
-
-
 def _run(cfg: Config003, prices, universe, rf, *, cost_bps=None, targets=None, strategy=None):
     return run_panel_backtest(
         prices,
@@ -411,19 +363,13 @@ def _run(cfg: Config003, prices, universe, rf, *, cost_bps=None, targets=None, s
         strategy,
         targets=targets,
         cost_bps=cfg.cost_bps_per_side if cost_bps is None else cost_bps,
-        drift_band=None,  # section 5: full rebalance to the new decile each month
+        drift_band=None,
         gross_cap=cfg.gross_exposure_cap,
         risk_free=rf,
     )
 
 
 def _psr(cfg: Config003, returns: pd.Series):
-    """PSR(0) and the deflated Sharpe at the cumulative counter of 3 configurations.
-
-    The deflation term needs the variance of the per-period Sharpe ratios across the
-    configurations actually tried. There are exactly three and all are known: 001's and
-    002's recorded results and this one. Nothing is estimated or assumed.
-    """
     own = float(returns.mean()) / float(returns.std(ddof=1))
     root = math.sqrt(TRADING_DAYS_PER_YEAR)
     trials = (

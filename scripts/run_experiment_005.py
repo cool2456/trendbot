@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""PREREG_005.md section 7's protocol, cross-sectional currency momentum.
-
-Driven from ``scripts/run_backtest.py --experiment 005``.
-
-Every reporting choice this file makes that PREREG_005.md does not fix is stated in the
-output as it is made, not left to the reader to reverse-engineer.
-
-Two of those choices were fixed **before any number existed**, because section 8
-adjudicates on them and choosing afterwards would be selection:
-
-* the dollar factor is the *daily equal-weighted mean* of the normalised currency
-  returns - the DOL construction section 5's parenthetical names - and both section 5's
-  Sharpe comparison and section 8's alpha regression run against that same series. The
-  buy-and-hold and monthly-rebalanced alternatives are reported beside it.
-* the quintile split is ``"even"``, so Q1 and Q5 are within one name of each other at
-  22 currencies. See :mod:`trendbot.xsmom`; ``"floor"`` is reported as a sensitivity.
-"""
 
 from __future__ import annotations
 
@@ -62,18 +45,12 @@ from trendbot.xsmom import quantile_sizes
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
-# Reporting choices, not strategy parameters. Section 6's frozen list contains none of
-# them and none can change a position.
-DEFAULT_NOISE_SEEDS = 16  # the build order's floor is 8; more seeds is strictly better evidence
+DEFAULT_NOISE_SEEDS = 16
 FACTOR_SHARES = (0.25, 0.5)
-# Synthetic panels are the real universe's width. Unlike experiment 003's 409 names,
-# 22 columns is cheap, so the null is tested at the bucket geometry the strategy
-# actually trades rather than at a convenient one.
-NOISE_ANNUAL_VOL = 0.10  # major FX runs near 10% annualised, not equities' 16%
+NOISE_ANNUAL_VOL = 0.10
 WORST_MONTHS = 5
 BUCKET_METHOD = "even"
 BUCKET_METHOD_ALTERNATIVE = "floor"
-# Recorded outputs of the earlier experiments, needed for the four-trial deflation term.
 EXPERIMENT_002_NET_SHARPE = 0.4631
 EXPERIMENT_003_NET_SHARPE = 0.6988
 
@@ -86,18 +63,7 @@ def _flag(ok: bool) -> str:
     return "PASS" if ok else "FAIL"
 
 
-# --------------------------------------------------------------------------------------
-# shared setup
-# --------------------------------------------------------------------------------------
-
-
 def _last_complete_session(index: pd.DatetimeIndex) -> pd.Timestamp:
-    """The last bar that is certainly a settled publication.
-
-    Same guard experiment 003 uses. H.10 rates are published with a lag so this almost
-    never binds here, but a panel that silently included a provisional bar is exactly
-    how experiment 003's benchmark came to cover one fewer day than its strategy.
-    """
     today = pd.Timestamp.today().normalize()
     earlier = index[index < today]
     if len(earlier) == 0:
@@ -121,23 +87,13 @@ def _run(cfg: Config005, prices, members, rf, *, cost_bps=None, targets=None, st
         strategy,
         targets=targets,
         cost_bps=cfg.cost_bps_per_side if cost_bps is None else cost_bps,
-        drift_band=None,  # section 5: full rebalance to the new quintile each month
+        drift_band=None,
         gross_cap=cfg.gross_exposure_cap,
         risk_free=rf,
     )
 
 
 def _psr(cfg: Config005, returns: pd.Series):
-    """PSR(0) and the deflated Sharpe at the cumulative counter of 4 configurations.
-
-    The deflation term needs the variance of the per-period Sharpe ratios across the
-    configurations actually tried. There are exactly four and all are known: 001's,
-    002's and 003's recorded results and this one. Nothing is estimated or assumed.
-
-    Blocked experiment 004 is **not** among them, per PREREG_005.md's header: it never
-    reached data, so it produced nothing a winner could have been selected from. The
-    parser asserts that argument is still in the document.
-    """
     own = float(returns.mean()) / float(returns.std(ddof=1))
     root = math.sqrt(TRADING_DAYS_PER_YEAR)
     trials = (
@@ -147,11 +103,6 @@ def _psr(cfg: Config005, returns: pd.Series):
         own,
     )
     return deflated_sharpe_ratio(returns, cfg.configurations_tried, trial_sharpes=trials), trials
-
-
-# --------------------------------------------------------------------------------------
-# step 1 - the quote-convention gate
-# --------------------------------------------------------------------------------------
 
 
 def report_quote_conventions(cfg: Config005, universe, prices) -> bool:
@@ -165,9 +116,6 @@ def report_quote_conventions(cfg: Config005, universe, prices) -> bool:
         "and cross-checked against the title. A series whose two strings disagree, or whose\n"
         f"units do not name exactly one US dollar leg, is refused rather than guessed at.\n"
     )
-    # Report what actually produced the artefacts, not what a fresh fetch would use.
-    # A key added after the panel was cached would otherwise make this line claim an
-    # access path that never touched this data.
     paths = sorted({universe.metadata[s].obtained_via for s in universe.candidates})
     print(
         f"metadata obtained via: {', '.join(paths)}  (a FRED_KEY is "
@@ -247,11 +195,6 @@ def report_quote_conventions(cfg: Config005, universe, prices) -> bool:
     return gate
 
 
-# --------------------------------------------------------------------------------------
-# step 2 - universe construction
-# --------------------------------------------------------------------------------------
-
-
 def report_universe(cfg: Config005, universe, end) -> bool:
     rule("STEP 2 - UNIVERSE CONSTRUCTION (section 2)")
     print(
@@ -312,11 +255,6 @@ def report_universe(cfg: Config005, universe, end) -> bool:
     return in_range and gap_ok
 
 
-# --------------------------------------------------------------------------------------
-# step 3 - returns and the handling of missing observations
-# --------------------------------------------------------------------------------------
-
-
 def report_returns(cfg: Config005, universe, prices, end) -> None:
     rule("STEP 3 - RETURNS AND MISSING-DATA HANDLING (section 4)")
     print(
@@ -375,27 +313,12 @@ def report_returns(cfg: Config005, universe, prices, end) -> None:
 
 
 def causality_report(cfg: Config005, universe, prices) -> str:
-    """Show that no future observation can move a past position.
-
-    The build order asks for a confirmation that the missing-value handling introduces
-    no lookahead. Asserting it about a forward fill is easy and unconvincing, so this
-    demonstrates it: the last quarter of the panel is overwritten with garbage, the
-    whole pipeline - normalisation is already done, but the fill, the momentum and the
-    quintile weights are not - is recomputed, and the target weights before the
-    tampered date are compared to the originals.
-
-    This is the same argument experiment 002's causality sweep makes, applied to the
-    piece that is new here. If the forward fill could ever reach backwards, or if the
-    momentum used a negative shift, this would print a non-zero difference.
-    """
     members = list(universe.universe)
     strategy = CurrencyCrossSectionalMomentum(cfg, universe.universe, BUCKET_METHOD)
     original = strategy(price_panel(prices, members))
 
     cut = prices.close.index[int(len(prices.close.index) * 0.75)]
     tampered_close = prices.close.copy()
-    # Multiply, do not replace: the values stay positive and finite, so the failure
-    # this looks for is a leak of information, not a NaN propagating backwards.
     tampered_close.loc[cut:] = tampered_close.loc[cut:] * 3.0
     tampered = prices.__class__(
         open=tampered_close.copy(),
@@ -408,8 +331,6 @@ def causality_report(cfg: Config005, universe, prices) -> str:
 
     before_cut = original.index < cut
     delta = float((original[before_cut] - after[before_cut]).abs().to_numpy().max())
-    # A hole is never filled from the future: the fill is monotone in the index, so the
-    # first valid index of each column is unchanged by anything after it.
     first_valid = {s: prices.close[s].first_valid_index() for s in members}
     no_backfill = all(
         prices.close[s].loc[: first_valid[s]].isna().sum() == len(prices.close[s].loc[: first_valid[s]]) - 1
@@ -424,16 +345,8 @@ def causality_report(cfg: Config005, universe, prices) -> str:
     )
 
 
-# --------------------------------------------------------------------------------------
-# step 4 - the noise tests
-# --------------------------------------------------------------------------------------
-
-
 def cmd_noise(cfg: Config005, args, universe=None) -> int:
     rule("STEP 4 / SECTION 7.2 - NOISE TESTS, BOTH VARIANTS")
-    # Resolved rather than defaulted, so ``--noise`` on its own and ``--validate`` test
-    # the null at the same bucket geometry. A width that differed between the two would
-    # make the standalone gate a different test from the one the protocol runs.
     if universe is None:
         universe = build_fx_universe(sample_start=cfg.sample_start, refresh=args.refresh)
     width = universe.n
@@ -525,11 +438,6 @@ def cmd_noise(cfg: Config005, args, universe=None) -> int:
     return 0 if passed else 1
 
 
-# --------------------------------------------------------------------------------------
-# steps 5-11 - the full protocol
-# --------------------------------------------------------------------------------------
-
-
 def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save: bool, args):
     start = pd.Timestamp(cfg.sample_start)
     members = list(universe.universe)
@@ -537,7 +445,6 @@ def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save
     panel = price_panel(prices, members)
     targets = strategy(panel)
 
-    # ---- step 5 --------------------------------------------------------------------
     rule("STEP 5 - FULL-SAMPLE BACKTEST, ONE RUN")
     print(cfg.describe())
     print(f"data: {prices.describe()}")
@@ -556,8 +463,6 @@ def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save
     factor_excess = (factor - rf_daily).loc[start:end]
     factor_stats = summarise(factor_excess)
 
-    # The two alternative constructions of section 5's benchmark, reported so the
-    # headline choice is visible rather than trusted. Neither adjudicates anything.
     bh_excess = (panel_buy_and_hold(prices, members, start=start) - rf_daily).loc[start:end]
     monthly_excess = (
         panel_buy_and_hold(prices, members, rebalance="monthly", start=start) - rf_daily
@@ -599,7 +504,6 @@ def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save
         f"moves {ladder_frame['Sharpe'].iloc[0] - ladder_frame['Sharpe'].iloc[-1]:+.3f}."
     )
 
-    # ---- step 6 --------------------------------------------------------------------
     rule("STEP 6 - QUINTILE MONOTONICITY (section 8)")
     study = bucket_study(
         prices,
@@ -646,7 +550,6 @@ def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save
         f"than Q1):\n  {alternative}"
     )
 
-    # ---- step 7 --------------------------------------------------------------------
     rule("STEP 7 - BETA ATTRIBUTION")
     print(
         "Headline: against the dollar factor, which is what section 8's alpha clause names.\n"
@@ -659,7 +562,7 @@ def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save
     print(f"      on {factor_regression.n_observations} overlapping daily observations")
 
     spy_regression = None
-    proxy = cfg.equity_proxy_symbol  # section 7 names it; never inlined here
+    proxy = cfg.equity_proxy_symbol
     try:
         equity = load_prices((proxy,), source="yahoo", max_abs_daily_move=None)
         spy_excess = (equity.close[proxy].pct_change(fill_method=None) - rf_daily).dropna().loc[start:end]
@@ -668,10 +571,9 @@ def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save
         print(f"      on {spy_regression.n_observations} overlapping daily observations "
               "(the H.10 and NYSE calendars are close but not identical; the regression "
               "uses their intersection)")
-    except Exception as exc:  # pragma: no cover - reported, never silently skipped
+    except Exception as exc:  # pragma: no cover
         print(f"  {proxy} regression UNAVAILABLE: {exc}")
 
-    # ---- step 8 --------------------------------------------------------------------
     rate_diagnostic = report_interest_rate_diagnostic(
         cfg, universe, prices, members, targets, rf, rf_daily, start, end, stats, refresh=args.refresh
     )
@@ -680,7 +582,6 @@ def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save
         cfg, universe, prices, members, rf, start, end, stats
     )
 
-    # ---- step 9 --------------------------------------------------------------------
     rule("STEP 9 - WORST MONTHS AND FX DISLOCATION CLUSTERING (section 9)")
     print(
         "Section 9 imposes no mandatory month here - currency momentum has no single canonical\n"
@@ -694,10 +595,6 @@ def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save
     for month, value, label in clustering.matched:
         print(f"  {month}  {value:+8.2%}   {label if label else '(no named dislocation)'}")
     print(f"\n  windows searched: {cfg.dislocation_months}")
-    # Distance to the nearest named window, computed for the months that did not match.
-    # Reported separately and never counted as a match: widening a window after seeing
-    # which months landed just outside it would be exactly the selection section 8 exists
-    # to prevent. This is an observation about the calendar, not an adjusted result.
     named = sorted({pd.Period(m, freq="M") for months in cfg.dislocation_months.values() for m in months})
     unmatched = [(month, value) for month, value, label in clustering.matched if label is None]
     if unmatched and named:
@@ -720,7 +617,6 @@ def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save
             "  the strategy, and it is flagged as such."
         )
 
-    # ---- step 10 -------------------------------------------------------------------
     rule(f"STEP 10 - PSR / DEFLATED SHARPE, configs_tried = {cfg.configurations_tried}")
     print(
         f"The counter is {cfg.configurations_tried}, not 5. PREREG_005.md's header argues that blocked "
@@ -739,7 +635,6 @@ def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save
         f"{'SIGNIFICANT' if dsr.is_significant else 'not significant'} at 95%"
     )
 
-    # ---- step 11 -------------------------------------------------------------------
     rule("STEP 11 - SECTION 8's PRE-COMMITTED DECISION RULE")
     decision = evaluate_decision_rule_005(
         cfg,
@@ -840,14 +735,6 @@ def report_backtest(cfg: Config005, universe, prices, end, rf, rf_daily, *, save
 
 
 def report_data_integrity_sensitivity(cfg, universe, prices, members, rf, start, end, headline_stats):
-    """How much of the headline rests on two observations that a peg says are wrong.
-
-    NOT a configuration and not a cleaning step. The headline above runs on the data
-    exactly as FRED publishes it, because sections 2-6 are frozen and authorise no
-    outlier rule. This re-runs it with the observations that breach a *policy* band
-    treated as holes - forward-filled, the same way a foreign holiday is - purely so the
-    sensitivity is a number rather than an unknown.
-    """
     rule("DATA INTEGRITY SENSITIVITY (not a configuration; the headline is unchanged)")
     breaches = peg_breach_dates(universe.normalised.loc[cfg.sample_start : end])
     if not breaches:
@@ -865,9 +752,6 @@ def report_data_integrity_sensitivity(cfg, universe, prices, members, rf, start,
         affected.update(dates)
 
     cleaned = universe.normalised.copy()
-    # Only the krone is edited: the cross-rate is (USD per EUR)/(USD per DKK) and the
-    # euro's own level on those dates is consistent with its neighbours, so the krone is
-    # the leg that moved. Stated rather than inferred silently.
     cleaned.loc[sorted(affected), "DEXDNUS"] = np.nan
     cleaned["DEXDNUS"] = cleaned["DEXDNUS"].ffill()
     cleaned_prices = prices.__class__(
@@ -983,9 +867,6 @@ def report_interest_rate_diagnostic(
         print("\n  no foreign short rates available; the diagnostic cannot be computed")
         return {"status": "unavailable", "reason": "no foreign short rates available"}
 
-    # How much the missing six can matter is not a matter of opinion: it is how often
-    # they were actually held. A currency the strategy never selects contributes no
-    # carry to the strategy however large its rate.
     held_share = {}
     if coverage.uncovered:
         weights = targets.loc[start:end]
@@ -1052,11 +933,6 @@ def report_interest_rate_diagnostic(
         "carry_cagr": carried_stats.cagr,
         "dollar_factor_carry_sharpe": factor_carried_stats.sharpe,
     }
-
-
-# --------------------------------------------------------------------------------------
-# entry points
-# --------------------------------------------------------------------------------------
 
 
 def cmd_backtest(cfg: Config005, args) -> int:

@@ -1,40 +1,3 @@
-"""Diagnostics whose purpose is to argue that experiment 002's result is not real.
-
-PREREG_002.md section 7, in order, with the two pieces that are new relative to
-experiment 001 called out:
-
-1. :func:`panel_noise_test` on **independent** random walks - the same null
-   experiment 001 ran.
-2. :func:`panel_noise_test` on **correlated** random walks driven by a shared common
-   factor, built by :func:`common_factor_prices`. This is the test that matters here
-   and it has no counterpart in experiment 001. A cross-sectional rule sorts
-   instruments against each other; if the instruments share a factor and load on it
-   with different betas, then "which names went up most over the past year" is partly
-   "which names have the highest beta", and the rule ends up holding a beta tilt.
-   On independent noise that failure mode cannot appear at all, so test 1 alone would
-   pass while the strategy was doing something the hypothesis never claimed.
-3. :func:`quintile_study` - section 8's monotonicity gate. This is a **pass/fail
-   criterion on the hypothesis**, not a diagnostic: section 8 abandons the strategy
-   outright if the ordering is not monotonic.
-4. :func:`worst_months` - section 9 predicts momentum crashes in March 2009 and April
-   2020 by name. Their *absence* would be evidence the implementation is not doing
-   what it claims.
-5. :func:`evaluate_decision_rule_002` - section 8, applied mechanically.
-
-Reporting choices that PREREG_002.md does not fix, disclosed here rather than
-chosen silently. None of them can change a position:
-
-* The common-factor generator's beta spread and the share of variance the factor
-  carries. Both are arguments with stated defaults, and the noise test is run across
-  a range of factor loadings so the result is not a single point.
-* The forward-return convention in the quintile study: **open of the rebalance bar to
-  open of the next rebalance bar**, which is the same fill convention section 5 gives
-  the strategy, so Q1's series is directly comparable to what the strategy earns.
-* The t-statistic on the Q1-Q5 spread is a plain one-sample t on the monthly spread.
-  Monthly overlapping-window autocorrelation is not corrected for; the windows do not
-  overlap, so there is nothing obvious to correct.
-"""
-
 from __future__ import annotations
 
 import math
@@ -68,15 +31,8 @@ __all__ = [
 ]
 
 
-# --------------------------------------------------------------------------------------
-# 0. universe verification (section 2)
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class UniverseVerification:
-    """Section 2's data-availability check, per ticker."""
-
     table: pd.DataFrame
     required_from: pd.Timestamp
     window_start: pd.Timestamp
@@ -85,7 +41,6 @@ class UniverseVerification:
 
     @property
     def dropped(self) -> tuple[str, ...]:
-        """Tickers whose history does not begin on or before the required date."""
         return tuple(self.table.index[~self.table["starts_early_enough"]])
 
     @property
@@ -98,7 +53,6 @@ class UniverseVerification:
 
     @property
     def with_holes(self) -> pd.Series:
-        """Tickers listed throughout the window that the vendor still skipped a bar for."""
         holes = self.table.loc[self.table["starts_early_enough"], "missing_bars_in_window"]
         return holes[holes > 0]
 
@@ -111,16 +65,6 @@ class UniverseVerification:
 
 
 def universe_verification(prices: PriceData, cfg: Config002) -> UniverseVerification:
-    """Section 2: confirm every ticker has continuous data from the required date.
-
-    "Continuous" is read as *continuously listed*, not "the vendor published a bar on
-    every single session". Those are different claims and only the first is a property
-    of the instrument. A one-day hole in a vendor feed for a fund that traded that day
-    is a data artefact; treating it as a discontinuity and dropping the ticker would
-    let the vendor's housekeeping choose the universe. Both are reported, separately,
-    so the reader applies whichever reading they prefer to a number rather than to a
-    description.
-    """
     required = pd.Timestamp(cfg.universe_history_required_from)
     close = prices.close
     window = close.loc[required:]
@@ -155,11 +99,6 @@ def universe_verification(prices: PriceData, cfg: Config002) -> UniverseVerifica
     )
 
 
-# --------------------------------------------------------------------------------------
-# synthetic data with a shared common factor
-# --------------------------------------------------------------------------------------
-
-
 def common_factor_prices(
     tickers: Sequence[str],
     *,
@@ -173,20 +112,6 @@ def common_factor_prices(
     overnight_gap_fraction: float = 0.4,
     start: str = "1998-01-02",
 ) -> PriceData:
-    """Correlated driftless random walks sharing one common factor.
-
-    ``r_i(t) = beta_i * f(t) + eps_i(t)``, with ``f`` a driftless factor and the
-    idiosyncratic vol set per instrument so that **every instrument has the same total
-    volatility**. That last part is what makes this a clean null: if the betas changed
-    the total vol as well, a cross-sectional momentum rule would be sorting partly on
-    volatility, and any result would be ambiguous between "loads on the factor" and
-    "loads on vol".
-
-    ``common_variance_share`` is the share of the *average* instrument's variance the
-    factor carries. Because ``sigma_eps_i^2 = sigma^2 - beta_i^2 sigma_f^2`` must stay
-    non-negative, the achievable share is bounded by the beta spread; an infeasible
-    combination raises rather than silently clipping.
-    """
     if n_days < 2:
         raise ValueError("need at least 2 days")
     if not 0.0 <= common_variance_share < 1.0:
@@ -214,8 +139,6 @@ def common_factor_prices(
     factor_mu = annual_factor_drift / TRADING_DAYS_PER_YEAR
     factor = rng.normal(factor_mu, factor_sd, size=(n_days, 1))
     idio = rng.normal(0.0, 1.0, size=(n_days, n_assets)) * idio_sd[None, :]
-    # -0.5 sigma^2 keeps the arithmetic drift at zero once exponentiated, so the null
-    # is "earns nothing", not "earns minus half a variance".
     log_returns = factor * betas[None, :] + idio - 0.5 * sd**2
 
     close = pd.DataFrame(
@@ -233,15 +156,8 @@ def common_factor_prices(
     )
 
 
-# --------------------------------------------------------------------------------------
-# 1 & 2. the two noise tests
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class PanelNoiseResult:
-    """Sharpe of the cross-sectional rule on synthetic data that contains nothing."""
-
     label: str
     seeds: tuple[int, ...]
     strategy_sharpes: tuple[float, ...]
@@ -264,20 +180,12 @@ class PanelNoiseResult:
 
     @property
     def t_stat(self) -> float:
-        """t of the mean Sharpe across seeds against zero. |t| > 2 is a red flag."""
         if len(self.strategy_sharpes) < 2 or not np.isfinite(self.std_sharpe):
             return float("nan")
         return self.mean_sharpe / (self.std_sharpe / math.sqrt(len(self.strategy_sharpes)))
 
     @property
     def mean_gross_sharpe(self) -> float:
-        """The rule's Sharpe with costs switched off - the pure "earns nothing" claim.
-
-        The net figure on driftless data is not expected to be zero: this strategy
-        replaces most of its book every month, so at 5 bps it loses the costs. Testing
-        the net number alone would conflate "the rule finds nothing" with "the costs
-        are large", and only the first is what section 7 step 1 is asking about.
-        """
         return float(np.mean(self.gross_sharpes))
 
     @property
@@ -302,11 +210,6 @@ class PanelNoiseResult:
         return float(np.max(self.strategy_sharpes))
 
     def passes(self, tolerance: float = 0.2) -> bool:
-        """Gross of costs, the rule and buy-and-hold must both earn approximately nothing.
-
-        Measured gross deliberately: see :attr:`mean_gross_sharpe`. The net figure is
-        reported alongside and is expected to sit below zero by the cost drag.
-        """
         return (
             abs(self.mean_gross_sharpe) <= tolerance
             and abs(self.mean_buy_and_hold_sharpe) <= tolerance
@@ -348,21 +251,8 @@ def panel_noise_test(
     gross_cap: float | None = None,
     **generator_kwargs,
 ) -> PanelNoiseResult:
-    """Run the real engine and a real ranking strategy on synthetic data.
-
-    ``correlated=False`` draws independent walks with
-    :func:`trendbot.engine.validation.synthetic_prices`; ``correlated=True`` draws
-    common-factor walks with :func:`common_factor_prices`. Both are driftless, so the
-    strategy and buy-and-hold must both earn approximately nothing.
-
-    Passing ``cfg`` alone reproduces experiment 002 exactly. Experiment 003 has no
-    ticker list in its document - its universe resolves from an index snapshot - so
-    ``universe``, ``strategy``, ``cost_bps`` and ``gross_cap`` may be supplied instead.
-    The loop, the generators and the engine are the same either way, which is what
-    stops the two experiments' noise tests from drifting apart.
-    """
-    from .panel_backtest import panel_buy_and_hold, run_panel_backtest  # avoids a cycle
-    from .validation import synthetic_prices  # avoids a cycle
+    from .panel_backtest import panel_buy_and_hold, run_panel_backtest
+    from .validation import synthetic_prices
 
     if cfg is None and (universe is None or strategy is None or cost_bps is None):
         raise ValueError(
@@ -406,15 +296,6 @@ def panel_noise_test(
 
 @dataclass(frozen=True, slots=True)
 class FactorAttribution:
-    """How much of the rule's return on correlated noise is just the common factor.
-
-    The worry the correlated test exists for is not only "does it earn something" but
-    "does whatever it earns come from a beta tilt". A Sharpe near zero could still hide
-    a rule that is a leveraged factor bet in a period when the factor happened to go
-    nowhere. Regressing the strategy on the equal-weight basket separates the two: beta
-    says how much of the book is the factor, alpha says what is left over.
-    """
-
     table: pd.DataFrame
 
     @property
@@ -437,7 +318,6 @@ class FactorAttribution:
 
     @property
     def sharpe_correlation(self) -> float:
-        """Cross-seed correlation between the rule's Sharpe and the basket's."""
         return float(self.table["strategy_sharpe"].corr(self.table["basket_sharpe"]))
 
     def __str__(self) -> str:
@@ -459,16 +339,7 @@ def factor_attribution(
     gross_cap: float | None = None,
     **generator_kwargs,
 ) -> FactorAttribution:
-    """Regress the rule's daily return on the equal-weight basket, one seed at a time.
-
-    Run gross of costs: the question is what the *rule* produces, and a cost drag is
-    not a factor loading.
-
-    As with :func:`panel_noise_test`, ``cfg`` alone reproduces experiment 002 and the
-    explicit ``universe``/``strategy`` arguments let experiment 003 - whose universe is
-    not in its document - run the identical diagnostic.
-    """
-    from .panel_backtest import panel_buy_and_hold, run_panel_backtest  # avoids a cycle
+    from .panel_backtest import panel_buy_and_hold, run_panel_backtest
 
     if cfg is None and (universe is None or strategy is None):
         raise ValueError("supply either cfg (experiment 002) or both universe and strategy")
@@ -496,17 +367,10 @@ def factor_attribution(
     return FactorAttribution(table=pd.DataFrame(rows).set_index("seed"))
 
 
-# --------------------------------------------------------------------------------------
-# 3. section 8's quintile monotonicity gate
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class QuintileStudy:
-    """Forward returns by momentum quintile — section 8's pass/fail criterion."""
-
-    returns: pd.DataFrame  # one column per bucket, one row per rebalance
-    membership: pd.DataFrame  # instrument count per bucket per rebalance
+    returns: pd.DataFrame
+    membership: pd.DataFrame
     n_quantiles: int
     convention: str
     label_prefix: str = "Q"
@@ -521,7 +385,6 @@ class QuintileStudy:
 
     @property
     def annualised(self) -> pd.Series:
-        """Geometric annualisation of each quintile's monthly series."""
         n = len(self.returns)
         if n == 0:
             return pd.Series(np.nan, index=self.returns.columns)
@@ -537,7 +400,6 @@ class QuintileStudy:
 
     @property
     def spread(self) -> pd.Series:
-        """The Q1 - Q5 monthly series."""
         return (self.returns.iloc[:, 0] - self.returns.iloc[:, -1]).rename("Q1-Q5")
 
     @property
@@ -560,18 +422,11 @@ class QuintileStudy:
 
     @property
     def is_monotonic(self) -> bool:
-        """True when mean forward return falls, step by step, from Q1 to Q5.
-
-        Strictly decreasing. Section 8 says "the ordering must be monotonically
-        decreasing from Q1 to Q5"; a tie is not a decrease, and with continuous
-        returns an exact tie does not arise, so nothing turns on the strictness.
-        """
         means = self.mean_monthly.to_numpy()
         return bool(np.all(np.diff(means) < 0))
 
     @property
     def n_inversions(self) -> int:
-        """How many of the four adjacent steps go the wrong way."""
         return int((np.diff(self.mean_monthly.to_numpy()) >= 0).sum())
 
     def table(self) -> pd.DataFrame:
@@ -616,13 +471,6 @@ def bucket_study(
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
 ) -> QuintileStudy:
-    """Section 8's monotonicity gate, for any universe and any number of buckets.
-
-    :func:`quintile_study` is experiment 002's call into this with five buckets;
-    experiment 003 calls it with ten and the ``"even"`` bucket convention. One
-    implementation, so the two experiments' gates cannot disagree about what a bucket
-    is.
-    """
     from ..xsmom import cross_sectional_momentum  # noqa: PLC0415
 
     universe = list(universe)
@@ -692,22 +540,6 @@ def quintile_study(
     start: pd.Timestamp | None = None,
     end: pd.Timestamp | None = None,
 ) -> QuintileStudy:
-    """Section 8: sort into quintiles at each rebalance, measure forward returns.
-
-    The sort uses the momentum known at the **previous** close - the same information
-    the strategy is allowed to trade on - and the forward return runs from the open of
-    the rebalance bar to the open of the next one, which is the fill convention
-    section 5 gives the strategy. So Q1's series is what a portfolio holding the top
-    quintile actually earns, gross of costs, and the comparison across quintiles is
-    like for like.
-
-    No negative shift is used anywhere: the forward return is read off consecutive
-    rebalance dates by position.
-
-    Experiment 002's parameters, handed to the shared :func:`bucket_study`. Keeping one
-    implementation is what stops 002's five-bucket gate and 003's ten-bucket gate from
-    quietly meaning different things by "a bucket".
-    """
     return bucket_study(
         prices,
         cfg.universe,
@@ -721,13 +553,7 @@ def quintile_study(
     )
 
 
-# --------------------------------------------------------------------------------------
-# 4. behavioural validation
-# --------------------------------------------------------------------------------------
-
-
 def worst_months(returns: pd.Series, n: int = 5) -> pd.DataFrame:
-    """The ``n`` worst calendar months of a daily return series, compounded."""
     if not isinstance(returns.index, pd.DatetimeIndex):
         raise TypeError("worst_months needs a DatetimeIndex")
     monthly = returns.groupby(returns.index.to_period("M")).apply(lambda x: float((1 + x).prod() - 1))
@@ -736,15 +562,8 @@ def worst_months(returns: pd.Series, n: int = 5) -> pd.DataFrame:
     return ordered.head(n).to_frame("return")
 
 
-# --------------------------------------------------------------------------------------
-# 5. section 8's pre-committed decision rule
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class Decision002:
-    """The verdict, evaluated mechanically against PREREG_002.md section 8."""
-
     strategy_sharpe: float
     benchmark_sharpe: float
     monotonic: bool
@@ -773,24 +592,6 @@ def evaluate_decision_rule_002(
     monotonic: bool,
     spread_positive: bool,
 ) -> Decision002:
-    """Apply section 8 exactly as written, with no interpretation at the margin.
-
-    Section 8, verbatim::
-
-        The hypothesis is supported only if all three hold:
-        - Net Sharpe (excess of T-bill, 5 bps) exceeds 0.40, AND
-        - Net Sharpe exceeds equal-weight buy-and-hold ... by at least 0.15, AND
-        - Quintile monotonicity holds. ... the ordering must be monotonically
-          decreasing from Q1 to Q5, and the Q1-Q5 spread must be positive.
-
-        Abandon if any of:
-        - It fails to beat equal-weight buy-and-hold at all, OR
-        - Quintile ordering is non-monotonic, OR
-        - Net Sharpe is below 0.15.
-
-    Comparators follow the document's own words: "exceeds" is strict, "at least" is
-    inclusive, "below" is strict.
-    """
     exceeds_min = strategy_sharpe > cfg.support_min_sharpe
     margin = strategy_sharpe - benchmark_sharpe
     beats_by_margin = margin >= cfg.support_min_sharpe_excess_over_buy_and_hold
@@ -833,7 +634,7 @@ def evaluate_decision_rule_002(
         ),
     )
 
-    if supported and abandon:  # pragma: no cover - section 8 makes this unreachable
+    if supported and abandon:  # pragma: no cover
         verdict = "CONTRADICTORY - the decision rule is internally inconsistent here"
     elif supported:
         verdict = "SUPPORTED"

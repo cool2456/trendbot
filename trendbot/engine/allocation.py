@@ -1,52 +1,3 @@
-"""Equal-risk-contribution allocation — PREREG_006.md section 3.
-
-This is the only new machinery experiment 006 needs. Everything else it does is a
-call into code experiments 001, 002 and 005 already validated: the covariance comes
-from :func:`trendbot.sizing.ewma_covariance`, the backtest from
-:func:`trendbot.engine.panel_backtest.run_panel_backtest`, the metrics from
-:mod:`trendbot.engine.metrics`.
-
-Why a solver at all
--------------------
-Section 3 asks for weights satisfying ``w_i * (Sw)_i`` equal for all ``i``. For two
-assets that has a closed form. For three it does not, and a formula that looks like
-one — inverse-vol, or inverse-variance — is *not* equal risk contribution unless the
-correlations happen to be identical. Getting this wrong produces weights that look
-plausible and are not what the document specifies, which is why
-:class:`ErcSolution` carries the realised risk contributions and the worst deviation
-from equality rather than leaving the caller to trust the solve.
-
-The formulation
----------------
-Spinu (2013) and Griveau-Billion, Richard & Roncalli (2013) show the ERC portfolio is
-the unique solution of a *strictly convex* problem::
-
-    min_{y > 0}  f(y) = 0.5 * y' S y - sum_i log(y_i)
-
-whose stationarity condition ``(Sy)_i = 1 / y_i`` is exactly ``y_i (Sy)_i = 1``, i.e.
-equal risk contributions; the ERC weights are then ``w = y / sum(y)``. Solving the
-convex problem rather than least-squares on the risk-contribution deviations matters:
-the least-squares surface is non-convex and has stationary points that are not ERC,
-so a solver can stop somewhere plausible and wrong. This one cannot: the objective is
-strictly convex on the positive orthant for any positive-definite ``S``, so there is
-one stationary point and it is the answer.
-
-Cyclical coordinate descent minimises it. Fixing every coordinate but ``i`` leaves a
-quadratic in ``y_i`` with one positive root::
-
-    y_i = (-b + sqrt(b^2 + 4 * S_ii)) / (2 * S_ii),   b = sum_{j != i} S_ij y_j
-
-which is a closed-form exact minimisation along that coordinate, so the objective
-decreases monotonically and the iteration cannot oscillate.
-
-Scale invariance
-----------------
-``f`` is minimised at a ``y`` whose scale depends on the units of ``S``, but ``w``
-does not: multiplying ``S`` by a constant rescales ``y`` and leaves ``y / sum(y)``
-alone. Annualised and daily covariance therefore give identical weights, and
-:func:`erc_weights` is tested for exactly that.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -63,19 +14,7 @@ __all__ = [
 ]
 
 
-# --------------------------------------------------------------------------------------
-# risk contributions
-# --------------------------------------------------------------------------------------
-
-
 def risk_contributions(weights: np.ndarray, cov: np.ndarray) -> np.ndarray:
-    """Fractional risk contribution of each position, summing to one.
-
-    ``RC_i = w_i (S w)_i / (w' S w)``. The denominator is the portfolio variance, so
-    these are variance shares; because ``sum_i w_i (Sw)_i = w' S w`` identically, they
-    sum to one for any weights whatsoever and the "equal" in equal risk contribution
-    means every entry equals ``1 / N``.
-    """
     weights = np.asarray(weights, dtype=float)
     cov = np.asarray(cov, dtype=float)
     marginal = cov @ weights
@@ -90,8 +29,6 @@ def risk_contributions(weights: np.ndarray, cov: np.ndarray) -> np.ndarray:
 
 @dataclass(frozen=True, slots=True)
 class ErcSolution:
-    """One equal-risk-contribution solve, with the evidence that it converged."""
-
     weights: pd.Series
     risk_contributions: pd.Series
     worst_deviation: float
@@ -118,31 +55,6 @@ def erc_weights(
     tol: float = 1e-12,
     max_iter: int = 10_000,
 ) -> ErcSolution:
-    """Solve for equal risk contribution across the columns of ``cov``.
-
-    Parameters
-    ----------
-    cov:
-        Positive-definite covariance matrix. Units are irrelevant — see the module
-        docstring on scale invariance.
-    tol:
-        Convergence tolerance on the largest ``|RC_i - 1/N|``, i.e. on the property
-        actually being solved for. Convergence is *not* tested on the change in ``y``
-        between sweeps: the scale of ``y`` depends on the units of ``S`` — it shrinks
-        like ``1/sqrt(c)`` when ``S`` is multiplied by ``c`` — so any tolerance on ``y``
-        with an absolute floor stops being scale-invariant at extreme magnitudes and
-        would report convergence on an unconverged solve. Risk contributions are
-        fractions of variance summing to one, so a tolerance on them means the same
-        thing at every scale.
-
-    Returns
-    -------
-    ErcSolution
-        ``weights`` sum to one and are strictly positive. ``worst_deviation`` is the
-        largest ``|RC_i - 1/N|`` actually realised, computed from the returned weights
-        rather than asserted from the solver's internal state — a solver that lies
-        about convergence still cannot fake this number.
-    """
     labels = list(cov.columns) if isinstance(cov, pd.DataFrame) else None
     matrix = np.asarray(cov.to_numpy() if isinstance(cov, pd.DataFrame) else cov, dtype=float)
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
@@ -152,10 +64,6 @@ def erc_weights(
         raise ValueError("cannot allocate across an empty universe")
     if not np.isfinite(matrix).all():
         raise ValueError("covariance matrix contains non-finite entries")
-    # The tolerance has to scale with the matrix, because this function is documented
-    # as scale-invariant and is called with both daily and annualised covariance. A
-    # fixed absolute tolerance would accept a daily matrix and reject the same matrix
-    # multiplied by 252, whose rounding error is 252 times larger in absolute terms.
     magnitude = float(np.max(np.abs(matrix)))
     asymmetry = float(np.max(np.abs(matrix - matrix.T)))
     if asymmetry > 1e-12 * max(magnitude, 1e-300):
@@ -177,9 +85,6 @@ def erc_weights(
             "solution would not be unique"
         )
 
-    # Start from the inverse-volatility portfolio. It is the exact answer when every
-    # correlation is equal, so on realistic inputs the sweep begins close and the
-    # iteration count reported below is a meaningful diagnostic rather than noise.
     y = 1.0 / np.sqrt(diagonal)
     y = y / np.sqrt(float(y @ matrix @ y))
 
@@ -190,9 +95,6 @@ def erc_weights(
     for iterations in range(1, max_iter + 1):
         previous = y.copy()
         for i in range(n):
-            # b is the covariance of coordinate i with everything else, holding the
-            # others fixed. Excluding i by subtracting its own term avoids building a
-            # mask and keeps the sweep O(n) per coordinate.
             b = float(matrix[i] @ y) - matrix[i, i] * y[i]
             y[i] = (-b + np.sqrt(b * b + 4.0 * matrix[i, i])) / (2.0 * matrix[i, i])
         worst = float(np.max(np.abs(risk_contributions(y / y.sum(), matrix) - target)))
@@ -200,8 +102,6 @@ def erc_weights(
             converged = True
             break
         if np.array_equal(y, previous):
-            # A fixed point in floating point: no further sweep can improve it, so stop
-            # and report honestly whether the tolerance was actually met.
             break
 
     weights = y / y.sum()
@@ -217,41 +117,11 @@ def erc_weights(
     )
 
 
-# --------------------------------------------------------------------------------------
-# section 3's weight pipeline
-# --------------------------------------------------------------------------------------
-
-
-# Section 3 states four operations - solve for equal risk contribution, apply a 5%/60%
-# per-sleeve bound "applied before renormalisation", renormalise, and scale the vector so
-# ex-ante volatility hits 10% subject to a gross cap of 1.0 - and never says where the vol
-# target enters. Two orders are defensible and they do not agree, so both are implemented
-# and both are reported. Nothing downstream may pick one silently: `order` has no default.
-#
-# "clip-first"  erc -> clip[min,max] -> renormalise to sum 1 -> x k -> gross cap
-#     The textual reading. "Renormalisation" then unambiguously names the divide-by-sum
-#     that restores sum-to-one after clipping, which is the only operation in the pipeline
-#     that word can denote, and the 5%/60% bounds are bounds on the *allocation* - a
-#     vector summing to one - where a 5% floor and a 60% ceiling are coherent and feasible.
-#
-# "scale-first" erc -> x k -> clip[min,max] -> gross cap
-#     The precedent reading: :func:`trendbot.sizing.target_weights` settles the identical
-#     question for experiment 001 in this order, and PREREG_006.md section 6 says to follow
-#     committed implementations. It is a weaker precedent than it looks, because 001 has
-#     only a per-instrument *maximum*; nothing in 001 corresponds to section 3's 5% floor,
-#     and a floor applied to already-vol-scaled weights inflates the book above the vol
-#     target whenever k is small, which is why this is not the headline.
 WEIGHT_ORDERS = ("clip-first", "scale-first")
 
 
 @dataclass(frozen=True, slots=True)
 class SleeveWeights:
-    """Section 3's whole weight pipeline for one rebalance date, stage by stage.
-
-    Every intermediate is kept so the ordering is auditable in the output rather than
-    buried in the code, which matters because the order is not pinned by the document.
-    """
-
     date: pd.Timestamp
     order: str
     erc: pd.Series
@@ -285,20 +155,6 @@ def allocate(
     order: str,
     tol: float = 1e-12,
 ) -> SleeveWeights:
-    """Section 3, for one rebalance date, under one of the two readings of its order.
-
-    ``cov`` must be *annualised*, because ``vol_target`` is: this function does no
-    annualising of its own and would silently target a daily volatility if handed a
-    daily matrix.
-
-    Under ``"clip-first"``, clipping and then renormalising can push a weight back
-    outside its own bound — clipping to a sum above one and dividing through moves
-    every weight down. Section 3 says the bounds are "applied before renormalisation",
-    which read literally means applied once, so that is what happens here; the
-    resulting breach is measured into ``bound_breach`` and reported rather than
-    iterated away, because iterating to a fixed point would be a construction the
-    document does not specify.
-    """
     if order not in WEIGHT_ORDERS:
         raise ValueError(f"unknown weight order {order!r}; expected one of {WEIGHT_ORDERS}")
     if not vol_target > 0:
@@ -347,8 +203,8 @@ def allocate(
         if gross_cap_binding:
             k = gross_cap / float(normalised.abs().sum())
         weights = normalised * k
-    else:  # "scale-first"
-        normalised = solution.weights  # the ERC solve already sums to one
+    else:
+        normalised = solution.weights
         exante = exante_of(normalised)
         if not exante > 0:
             raise ValueError(

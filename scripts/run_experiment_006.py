@@ -1,29 +1,4 @@
 #!/usr/bin/env python3
-"""Experiment 006 — PREREG_006.md, multi-strategy risk allocation.
-
-::
-
-    python scripts/run_backtest.py --experiment 006 --sleeves   # step 1, the reproduction gate
-    python scripts/run_backtest.py --experiment 006 --noise      # step 4, the noise test
-    python scripts/run_backtest.py --experiment 006              # steps 2-3 and 5-10
-    python scripts/run_backtest.py --experiment 006 --validate   # the whole protocol
-
-There is no new signal in this experiment. Every sleeve return series is produced by an
-earlier experiment's committed implementation, unmodified, and everything here is
-portfolio construction on top of results that already exist. That moves the failure
-modes: the things that can go wrong are a covariance that knows the future, a solver
-that quietly fails to converge, an asymmetry between how the portfolio and the benchmark
-are built, and a one-bar slip between three trading calendars. Each has a gate, and each
-gate prints the number it turned on rather than the word PASS alone.
-
-Two readings are unpinned by the document and both are reported in full
------------------------------------------------------------------------
-Section 4 does not say whether sleeve C's benchmark carries the same carry correction
-section 2 applies to sleeve C itself, and section 3 does not say where its volatility
-target enters its weight pipeline. Each moves section 8's first clause across zero, so
-neither is chosen silently: the headline reading is stated, the alternative is run
-through the identical machinery, and both appear side by side in every section 8 table.
-"""
 
 from __future__ import annotations
 
@@ -55,23 +30,14 @@ from trendbot.sleeves import BENCHMARK_VARIANTS, load_sleeves, reproduce
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
-# Recorded outputs of the earlier experiments, needed for the five-trial deflation term.
-# Outputs, not parameters; not editable to move a number.
 EXPERIMENT_002_NET_SHARPE = 0.4631
 EXPERIMENT_003_NET_SHARPE = 0.6988
-EXPERIMENT_005_NET_SHARPE = -0.271  # 005's recorded headline: spot-only
-EXPERIMENT_005_CARRY_SHARPE = 0.209  # 005's section 4 diagnostic, which supplies sleeve C
+EXPERIMENT_005_NET_SHARPE = -0.271
+EXPERIMENT_005_CARRY_SHARPE = 0.209
 
-# The headline readings of the two clauses PREREG_006.md leaves open. Declared here,
-# before any number exists, so that neither can be chosen after seeing a result.
 HEADLINE_BENCHMARK_VARIANT = "carry-corrected"
 HEADLINE_WEIGHT_ORDER = "clip-first"
 
-# Section 7 step 4's synthetic sleeves. The correlation structure is deliberately
-# asymmetric and roughly the shape section 9 predicts for the real one - two sleeves
-# sharing a universe and correlating highly, a third less so - because a solver bug that
-# only shows up on unequal correlations would be invisible on an equicorrelated matrix,
-# and equal correlations are the one case where inverse-vol IS the ERC answer.
 NOISE_CORRELATION = np.array(
     [
         [1.00, 0.70, 0.40],
@@ -81,8 +47,8 @@ NOISE_CORRELATION = np.array(
 )
 NOISE_ANNUAL_VOLS = (0.075, 0.11, 0.09)
 NOISE_LABELS = ("A", "B", "C")
-NOISE_N_DAYS = 6000  # matches the shared parser default; --n-days overrides
-NOISE_N_SEEDS = 12  # the build asks for at least 8
+NOISE_N_DAYS = 6000
+NOISE_N_SEEDS = 12
 
 
 def rule(title: str) -> None:
@@ -94,7 +60,6 @@ def _flag(ok: bool) -> str:
 
 
 def _overlay(cfg: Config006, returns: pd.DataFrame, rf, *, label: str, order: str, cost_bps=None):
-    """One call site for every overlay in this experiment — portfolio and benchmark alike."""
     return run_overlay(
         returns,
         rf,
@@ -107,11 +72,6 @@ def _overlay(cfg: Config006, returns: pd.DataFrame, rf, *, label: str, order: st
         order=order,
         cost_bps=cfg.overlay_cost_bps_per_side if cost_bps is None else cost_bps,
     )
-
-
-# --------------------------------------------------------------------------------------
-# step 1 - sleeve reproduction
-# --------------------------------------------------------------------------------------
 
 
 def report_sleeves(cfg: Config006, sleeve_set, check) -> bool:
@@ -142,11 +102,6 @@ def report_sleeves(cfg: Config006, sleeve_set, check) -> bool:
     )
     print(f"\nGATE: all three sleeves reproduce their recorded headline -> {_flag(check.passed)}")
     return check.passed
-
-
-# --------------------------------------------------------------------------------------
-# step 2 - date alignment
-# --------------------------------------------------------------------------------------
 
 
 def report_alignment(cfg: Config006, sleeve_set):
@@ -186,11 +141,6 @@ def report_alignment(cfg: Config006, sleeve_set):
     return alignment
 
 
-# --------------------------------------------------------------------------------------
-# step 3 - covariance and the ERC solve
-# --------------------------------------------------------------------------------------
-
-
 def report_covariance_and_solver(cfg: Config006, returns: pd.DataFrame) -> bool:
     rule("STEP 3 - COVARIANCE POINT-IN-TIME AND ERC CONVERGENCE. HARD GATES.")
     print(
@@ -226,8 +176,6 @@ def report_covariance_and_solver(cfg: Config006, returns: pd.DataFrame) -> bool:
         "closed-form step per coordinate. Least-squares on the risk-contribution deviations\n"
         "would be non-convex and could stop somewhere plausible and wrong.\n"
     )
-    # An independent check of the solver against a case with a known answer, plus a
-    # scale-invariance check, before it is trusted on the real matrices.
     equicorrelated = pd.DataFrame(
         np.array([[0.04, 0.012, 0.012], [0.012, 0.04, 0.012], [0.012, 0.012, 0.04]]),
         index=list(returns.columns),
@@ -249,7 +197,6 @@ def report_solver_convergence(label: str, overlay) -> bool:
     diagnostics = overlay.diagnostics
     worst = overlay.worst_erc_deviation
     converged = overlay.all_converged
-    # 1/N is the target share; the deviation is reported both absolutely and as a share.
     n = overlay.risk_contributions.shape[1]
     print(
         f"  {label:28s} solves {len(diagnostics):5d}  worst |RC_i - 1/{n}| = {worst:.3e}  "
@@ -257,11 +204,6 @@ def report_solver_convergence(label: str, overlay) -> bool:
         f"all converged: {_flag(converged)}"
     )
     return converged and worst < 1e-8
-
-
-# --------------------------------------------------------------------------------------
-# step 4 - the noise test
-# --------------------------------------------------------------------------------------
 
 
 def cmd_noise(cfg: Config006, args) -> int:
@@ -310,23 +252,7 @@ def cmd_noise(cfg: Config006, args) -> int:
     return 0 if passed else 1
 
 
-# --------------------------------------------------------------------------------------
-# steps 5-10 - the backtest, the decision rule and the verdict
-# --------------------------------------------------------------------------------------
-
-
 def _psr(cfg: Config006, returns: pd.Series, *, fifth_trial: float):
-    """PSR(0) and the deflated Sharpe at the cumulative counter of five configurations.
-
-    The deflation term needs the per-period Sharpes of every configuration tried. There
-    are five and all are known: 001's, 002's, 003's and 005's recorded results and this
-    one. PREREG_006.md names none of them, so which value stands for 005 is a reporting
-    choice and is made explicitly: ``fifth_trial`` is 005's recorded HEADLINE (-0.271)
-    for the primary reading, because the counter counts configurations and -0.271 is the
-    result that configuration recorded, and 005's carry diagnostic (+0.209) for the
-    alternative, because that is the series sleeve C actually contributes. Both are
-    reported; neither gates anything.
-    """
     own = float(returns.mean()) / float(returns.std(ddof=1))
     root = math.sqrt(TRADING_DAYS_PER_YEAR)
     trials = (
@@ -340,7 +266,6 @@ def _psr(cfg: Config006, returns: pd.Series, *, fifth_trial: float):
 
 
 def _build(cfg: Config006, sleeve_set, alignment, rf, *, order: str, cost_bps=None):
-    """The portfolio and its section 4 benchmark, from one function, with one set of settings."""
     index = alignment.index
     sleeves = pd.DataFrame({s.label: s.returns for s in sleeve_set.sleeves}).loc[index]
     benchmarks = pd.DataFrame({s.label: s.benchmark for s in sleeve_set.sleeves}).loc[index]
@@ -355,7 +280,6 @@ def report_backtest(cfg: Config006, sleeve_set, alignment, rf, *, save: bool, ar
         cfg, sleeve_set, alignment, rf, order=HEADLINE_WEIGHT_ORDER
     )
 
-    # ---- step 3's convergence gate, on the real matrices ------------------------------
     rule("STEP 3 (continued) - ERC CONVERGENCE ON THE REAL COVARIANCES")
     solver_ok = True
     for label, overlay in (("portfolio", portfolio), ("benchmark", benchmark)):
@@ -378,7 +302,6 @@ def report_backtest(cfg: Config006, sleeve_set, alignment, rf, *, save: bool, ar
         )
         return 1
 
-    # ---- step 5's symmetry gate -------------------------------------------------------
     rule("STEP 5 - BENCHMARK SYMMETRY (section 4). HARD GATE.")
     print(
         "Section 4: 'identical covariance estimation, identical vol target, identical caps'.\n"
@@ -395,7 +318,6 @@ def report_backtest(cfg: Config006, sleeve_set, alignment, rf, *, save: bool, ar
         + ", ".join(f"{s.label}={s.benchmark_name}" for s in sleeve_set.sleeves)
     )
 
-    # ---- step 6 -----------------------------------------------------------------------
     rule("STEP 6 - FULL-SAMPLE BACKTEST, ONE RUN")
     print(cfg.describe())
     lo, hi = alignment.span
@@ -475,7 +397,6 @@ def report_backtest(cfg: Config006, sleeve_set, alignment, rf, *, save: bool, ar
         f"{ladder_frame['portfolio Sharpe'].iloc[-1] - ladder_frame['portfolio Sharpe'].iloc[0]:+.4f}."
     )
 
-    # ---- step 7 -----------------------------------------------------------------------
     rule("STEP 7 - SECTION 8's THREE CLAUSES, EACH AS A NUMBER")
     sleeve_sharpes = pd.Series({label: sharpe(sleeves[label]) for label in sleeves.columns})
     benchmark_sharpes = pd.Series({label: sharpe(benchmarks[label]) for label in benchmarks.columns})
@@ -539,9 +460,6 @@ def report_backtest(cfg: Config006, sleeve_set, alignment, rf, *, save: bool, ar
         "  what the strategies do. The clause passes, but a good part of why it passes is\n"
         "  universe overlap rather than strategy behaviour."
     )
-    # Section 1 states the mechanism as arithmetic. Since every term in it is now
-    # measured, the prediction can be checked rather than merely invoked - and the
-    # comparison is what explains the result.
     print("\n  SECTION 1's ARITHMETIC, WITH EVERY TERM MEASURED")
     print(
         "  Section 1 states S_combined = s x sqrt(N) / sqrt(1 + (N-1)rho). Both sides of\n"
@@ -593,7 +511,6 @@ def report_backtest(cfg: Config006, sleeve_set, alignment, rf, *, save: bool, ar
         freq_rows.append({"frequency": name, "sleeves": s_up, "benchmarks": b_up, "difference": s_up - b_up})
     print("  " + pd.DataFrame(freq_rows).set_index("frequency").round(4).to_string().replace("\n", "\n  "))
 
-    # ---- step 8 -----------------------------------------------------------------------
     rule("STEP 8 - ATTRIBUTION: RISK CONTRIBUTION AND THE WEIGHT PATH")
     print(
         "An ERC portfolio that is effectively single-sleeve is not testing section 1's\n"
@@ -623,9 +540,6 @@ def report_backtest(cfg: Config006, sleeve_set, alignment, rf, *, save: bool, ar
     traded = portfolio.targets.loc[portfolio.diagnostics.index]
     print("\ntarget weights after section 3's caps and vol scaling:")
     print("  " + traded.describe().loc[["mean", "std", "min", "max"]].round(4).to_string().replace("\n", "\n  "))
-    # The weights that were actually traded, at the rebalances that actually happened,
-    # labelled by real dates. A resample label would sit at a period end that can fall
-    # outside the sample entirely.
     rebals = rebalance_dates(portfolio.sleeve_returns.index)
     positions = {d: i for i, d in enumerate(portfolio.sleeve_returns.index)}
     decisions = [
@@ -661,7 +575,6 @@ def report_backtest(cfg: Config006, sleeve_set, alignment, rf, *, save: bool, ar
         f"  lowest-volatility sleeve, not a view about it."
     )
 
-    # ---- step 9 -----------------------------------------------------------------------
     rule("STEP 9 - PSR AND DEFLATED SHARPE AT configs_tried = 5")
     print(
         "PREREG_006.md's header, restated because it is the point: this experiment reuses\n"
@@ -685,7 +598,6 @@ def report_backtest(cfg: Config006, sleeve_set, alignment, rf, *, save: bool, ar
         "  reporting choice, made in the open and reported both ways. It gates nothing."
     )
 
-    # ---- the two unpinned readings, side by side ---------------------------------------
     rule("THE TWO UNPINNED READINGS, RUN THROUGH THE IDENTICAL MACHINERY")
     print(
         "Section 4 does not say whether sleeve C's benchmark carries the carry correction\n"
@@ -700,11 +612,9 @@ def report_backtest(cfg: Config006, sleeve_set, alignment, rf, *, save: bool, ar
         "  margin under all four combinations, and it is the clause that decides the verdict."
     )
 
-    # ---- section 5's alternative reading ------------------------------------------------
     rule("SECTION 5's ALTERNATIVE READING - RAW AVAILABLE HISTORIES")
     raw = report_raw_window(cfg, rf, args)
 
-    # ---- step 10 ----------------------------------------------------------------------
     rule("STEP 10 - SECTION 8's PRE-COMMITTED VERDICT")
     print(decision.table().round(4).to_string())
     print(f"\n{decision}")
@@ -762,16 +672,6 @@ def report_backtest(cfg: Config006, sleeve_set, alignment, rf, *, save: bool, ar
 
 
 def report_raw_window(cfg: Config006, rf, args) -> pd.DataFrame:
-    """Section 5 read as raw data extent rather than as the pre-committed windows.
-
-    Reported because section 9 expected a window "governed by 002's ETF universe and
-    005's post-1999 start" and the headline reading cannot produce one, so the
-    expectation is tested rather than only contradicted. It is NOT the headline, and the
-    reason is not preference: only 20 of 002's 41 ETFs had listed by 1999, so under this
-    reading sleeve B is a top-quintile-of-20 strategy for the first decade — a
-    re-parameterisation section 2 forbids. The sleeve reproduction gate is deliberately
-    not applied here, because these series are by construction not the recorded ones.
-    """
     print(
         "Reading 'available histories' as the raw extent of each experiment's computable\n"
         "return series rather than as its pre-committed window. This CHANGES WHAT SLEEVE B\n"
@@ -824,7 +724,6 @@ def report_raw_window(cfg: Config006, rf, args) -> pd.DataFrame:
 
 
 def report_readings(cfg: Config006, alignment, rf, args) -> pd.DataFrame:
-    """Every combination of the two unpinned readings, through the same machinery."""
     rows = []
     for variant in BENCHMARK_VARIANTS:
         subset = load_sleeves(benchmark_variant=variant, source=args.source)
@@ -856,11 +755,6 @@ def report_readings(cfg: Config006, alignment, rf, args) -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows).set_index(["sleeve C benchmark", "weight order"])
-
-
-# --------------------------------------------------------------------------------------
-# entry points
-# --------------------------------------------------------------------------------------
 
 
 def cmd_sleeves(cfg: Config006, args) -> int:

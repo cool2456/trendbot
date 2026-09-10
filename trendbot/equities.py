@@ -1,47 +1,3 @@
-"""Universe resolution and the corporate-action audit for an equity universe.
-
-Experiments 001 and 002 ran on large, liquid ETFs, where the only data question worth
-asking was "did the vendor publish a bar". A universe of individual companies raises
-two that ETFs could not.
-
-**Corporate actions.** An unadjusted 2-for-1 split reads as a -50% return. On a
-*momentum* ranking that is not a small error: it drops the name straight into the
-bottom decile and holds it there for a year. Spin-offs and large special dividends do
-the same thing. :func:`corporate_action_audit` finds every extreme daily move in the
-panel and classifies it against the vendor's own split and dividend records, so the
-question "is this a market move or a broken adjustment" is answered per event rather
-than assumed either way.
-
-**Point-in-time adjustment.** A series adjusted with *today's* factors encodes future
-corporate actions into past prices. That is a genuine lookahead and no ``.shift()``
-catches it, because nothing about it is a shift.
-:func:`adjustment_convention` states plainly what the vendor does, and
-:func:`ratio_invariance_report` quantifies what it costs *this* signal, rather than
-either ignoring it or waving at it.
-
-The quantification matters and is not obvious, so it is spelled out here and
-demonstrated numerically in ``tests/test_equities.py``:
-
-    Back-adjustment multiplies every price strictly before an event by a constant
-    factor ``f``. The signal is a **ratio** of two prices, ``P(t-21) / P(t-252)``.
-
-    * An event *after* bar ``t`` scales both endpoints by the same ``f``, and the
-      ratio is unchanged. Future splits and future dividends therefore cannot leak
-      into a past signal value through this route.
-    * An event *between* ``t-252`` and ``t-21`` scales only the older endpoint, which
-      is precisely the correction that makes the ratio a true return.
-
-    So for a ratio signal the back-adjusted series and a hypothetical point-in-time
-    series produce **identical** momentum values. What back-adjustment does change is
-    the price *level*, which this strategy never uses: it sizes by equal weight, not by
-    share count.
-
-    What that argument does **not** cover, and what is therefore reported as live
-    exposure rather than dismissed: an event the vendor has *wrong or missing*, which
-    the audit is for; and delisting/index-membership survivorship, which is
-    PREREG_003.md section 2's problem and is not a data-adjustment question.
-"""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -74,26 +30,8 @@ __all__ = [
 UNIVERSE_DIR = REPO_ROOT / "data" / "universe"
 
 
-# --------------------------------------------------------------------------------------
-# the market proxy for the section 7.5 regression
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class MarketProxy:
-    """Which series section 7.5's regression calls "the market", and why.
-
-    PREREG_003.md section 7.5 requires a regression on "market excess returns" and names
-    no index, so the choice is a reporting decision the document leaves open. Section 8
-    then turns the resulting alpha into both a support clause and an abandon clause,
-    which makes it a decision worth recording rather than burying at a call site.
-
-    It lives in a tracked JSON file next to the constituent snapshot for the same reason
-    the snapshot does: it is *disclosed data about the experiment*, not logic, and
-    keeping it out of the source is what lets ``tests/test_repo_invariants.py`` keep
-    banning inlined tickers everywhere without an exception carved out for this one.
-    """
-
     symbol: str
     role: str
     rationale: str
@@ -106,7 +44,6 @@ class MarketProxy:
 
 
 def load_market_proxy(path: Path | str | None = None) -> MarketProxy:
-    """Load the declared market proxy. No default symbol: absence is an error."""
     path = Path(path) if path is not None else UNIVERSE_DIR / "market_proxy.json"
     if not path.is_file():
         raise FileNotFoundError(
@@ -124,21 +61,8 @@ def load_market_proxy(path: Path | str | None = None) -> MarketProxy:
     )
 
 
-# --------------------------------------------------------------------------------------
-# the constituent snapshot
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class ConstituentSnapshot:
-    """A dated, hashed list of index members.
-
-    PREREG_003.md section 2 defines the universe as a *rule* - "current S&P 500
-    constituents" - which is a moving target. Pinning it to a file with a retrieval
-    date and a digest is what makes the experiment reproducible: re-running it next
-    month against a live index would silently be a different experiment.
-    """
-
     table: pd.DataFrame
     source_url: str
     retrieved_at: str
@@ -147,7 +71,6 @@ class ConstituentSnapshot:
 
     @property
     def symbols(self) -> tuple[str, ...]:
-        """Vendor-format symbols, in the order the snapshot lists them."""
         return tuple(self.table["yahoo_symbol"])
 
     @property
@@ -155,7 +78,6 @@ class ConstituentSnapshot:
         return len(self.table)
 
     def index_symbol(self, vendor_symbol: str) -> str:
-        """The index vendor's spelling of a symbol, e.g. ``BRK-B`` -> ``BRK.B``."""
         row = self.table.loc[self.table["yahoo_symbol"] == vendor_symbol]
         if row.empty:
             raise KeyError(vendor_symbol)
@@ -175,12 +97,6 @@ class ConstituentSnapshot:
 
 
 def load_constituent_snapshot(path: Path | str | None = None) -> ConstituentSnapshot:
-    """Load the pinned constituent list, verifying its recorded digest.
-
-    A snapshot whose bytes no longer match the digest recorded beside it is refused:
-    the universe is part of the experiment's definition, and an edited universe is a
-    different experiment whatever the file is called.
-    """
     if path is None:
         candidates = sorted(UNIVERSE_DIR.glob("sp500_constituents_*.csv"))
         if not candidates:
@@ -218,15 +134,8 @@ def load_constituent_snapshot(path: Path | str | None = None) -> ConstituentSnap
     )
 
 
-# --------------------------------------------------------------------------------------
-# section 2 - universe resolution
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class EquityUniverse:
-    """The concrete universe section 2's rule resolves to, and what it excluded."""
-
     universe: tuple[str, ...]
     table: pd.DataFrame
     excluded: pd.DataFrame
@@ -260,15 +169,6 @@ def resolve_universe(
     required_from: str,
     window_end: pd.Timestamp | None = None,
 ) -> EquityUniverse:
-    """Turn section 2's rule into a ticker tuple, and record what it threw away.
-
-    "Continuous daily data from ``required_from``" is read as **continuously listed**:
-    the name's first bar is on or before the required date and its last bar reaches the
-    end of the window. It is not read as "the vendor published a bar on every single
-    session", which is a statement about the feed rather than about the company - the
-    same reading experiment 002 used and disclosed. Per-ticker missing-bar counts are
-    reported so the stricter reading can be applied to a number.
-    """
     required = pd.Timestamp(required_from)
     close = prices.close
     end = pd.Timestamp(window_end) if window_end is not None else close.index[-1]
@@ -332,15 +232,8 @@ def resolve_universe(
     )
 
 
-# --------------------------------------------------------------------------------------
-# section 5 - the corporate action audit
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class CorporateActionAudit:
-    """Every extreme daily move in the panel, classified against vendor action records."""
-
     events: pd.DataFrame
     threshold: float
     n_observations: int
@@ -354,22 +247,14 @@ class CorporateActionAudit:
 
     @property
     def unexplained(self) -> pd.DataFrame:
-        """Moves with no split within a day of them - i.e. market moves, not artefacts."""
         return self.events[self.events["classification"] == "market move"]
 
     @property
     def split_suspected(self) -> pd.DataFrame:
-        """Moves coinciding with a split, which would mean the adjustment failed."""
         return self.events[self.events["classification"] == "UNADJUSTED SPLIT"]
 
     @property
     def passes(self) -> bool:
-        """True when no extreme move coincides with a split the vendor knows about.
-
-        A move that coincides with a known split is an adjustment failure and is fatal.
-        A move with no split behind it is a market move; individual equities have those
-        and no threshold can make them go away.
-        """
         return len(self.split_suspected) == 0 and not self.fetch_errors
 
     def by_year(self) -> pd.Series:
@@ -395,11 +280,6 @@ def _split_cache_path(tickers, start: str) -> Path:
 def _split_dates(
     tickers, start: str, *, cache: bool = True, refresh: bool = False
 ) -> tuple[dict[str, pd.DatetimeIndex], list[str]]:
-    """Split dates per ticker, straight from the vendor's own action records.
-
-    Cached, because fetching per-ticker action records for a 400-name universe is a
-    few hundred round trips and the audit is run by every protocol command.
-    """
     tickers = list(tickers)
     path = _split_cache_path(tickers, start)
     if cache and not refresh and path.is_file():
@@ -409,14 +289,14 @@ def _split_dates(
             list(payload["errors"]),
         )
 
-    import yfinance  # noqa: PLC0415  (research-only dependency)
+    import yfinance  # noqa: PLC0415
 
     out: dict[str, pd.DatetimeIndex] = {}
     errors: list[str] = []
     for symbol in tickers:
         try:
             splits = yfinance.Ticker(symbol).splits
-        except Exception as exc:  # noqa: BLE001 - the vendor, not our logic
+        except Exception as exc:  # noqa: BLE001
             errors.append(f"{symbol}: {type(exc).__name__}: {exc}")
             continue
         if splits is None or len(splits) == 0:
@@ -425,11 +305,6 @@ def _split_dates(
         index = pd.DatetimeIndex(splits.index)
         if index.tz is not None:
             index = index.tz_localize(None)
-        # The vendor stamps actions at the 09:30 open; the price index is midnight-
-        # normalised. Without this normalise() every action sorts *after* its own bar,
-        # and any check that snaps "to the first bar on or after the action" silently
-        # inspects the following session - which makes the whole reconciliation pass
-        # vacuously. This bit us once; ``tests/test_equities.py`` pins it.
         index = index.normalize()
         out[symbol] = index[index >= pd.Timestamp(start)]
 
@@ -458,18 +333,6 @@ def corporate_action_audit(
     split_dates: dict[str, pd.DatetimeIndex] | None = None,
     tolerance_days: int = 3,
 ) -> CorporateActionAudit:
-    """Find every daily move beyond ``threshold`` and reconcile it against splits.
-
-    PREREG_003.md section 5 requires this before any result is trusted, and the build
-    order gates everything downstream on it. The classification is deliberately
-    conservative in the direction that matters: a move is called ``UNADJUSTED SPLIT``
-    whenever a split is recorded within ``tolerance_days`` of it *and* the move's
-    direction matches what an unapplied split of that size would look like. Everything
-    else is a market move, which single stocks genuinely have.
-
-    ``split_dates`` may be injected so the audit can be tested offline; when omitted it
-    is fetched from the vendor's action records.
-    """
     universe = list(universe)
     close = prices.close[universe]
     if start is not None:
@@ -520,26 +383,8 @@ def corporate_action_audit(
     )
 
 
-# --------------------------------------------------------------------------------------
-# the stronger audit: every recorded action, not every large move
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class SplitReconciliation:
-    """Adjusted return on **every** recorded split date, whatever its size.
-
-    The ±35% scan the build order specifies is a *return* filter, and it therefore
-    only finds a broken adjustment big enough to clear the threshold. A 5-for-4 split
-    that failed to adjust is a −20% return: badly wrong, invisible to a 35% scan, and
-    quite enough to move a name several deciles.
-
-    This pass inverts the question. Instead of asking "which large moves have an action
-    behind them", it asks "what did the series do on every date an action is recorded",
-    which is the complete test. On a correctly adjusted series a split date is an
-    ordinary trading day and the return is an ordinary market return.
-    """
-
     table: pd.DataFrame
     threshold: float
     n_splits: int
@@ -570,7 +415,6 @@ def split_reconciliation(
     start: str | None = None,
     threshold: float = 0.20,
 ) -> SplitReconciliation:
-    """Check the adjusted return on every recorded corporate action date."""
     universe = list(universe)
     close = prices.close[universe]
     if start is not None:
@@ -582,14 +426,9 @@ def split_reconciliation(
 
     rows = []
     for symbol, dates in split_dates.items():
-        # Normalised defensively as well as at the source: an action stamped 09:30
-        # against a midnight-normalised price index sorts after its own bar, and the
-        # snap below would then inspect the following session instead of the ex-date.
         for date in pd.DatetimeIndex(dates).normalize():
             if date < close.index[0] or date > close.index[-1]:
                 continue
-            # Snap to the first trading bar on or after the ex-date: the ex-date is
-            # normally a session, but a holiday in the feed must not skip the check.
             position = close.index.searchsorted(date)
             if position >= len(close.index):
                 continue
@@ -622,13 +461,7 @@ def split_reconciliation(
     )
 
 
-# --------------------------------------------------------------------------------------
-# section 5 - the point-in-time question
-# --------------------------------------------------------------------------------------
-
-
 def adjustment_convention(prices: PriceData) -> dict:
-    """State what the vendor's adjustment actually is. No inference, no reassurance."""
     return {
         "source": prices.source,
         "vendor_call": "yfinance.download(..., auto_adjust=True)",
@@ -645,8 +478,6 @@ def adjustment_convention(prices: PriceData) -> dict:
 
 @dataclass(frozen=True, slots=True)
 class RatioInvarianceReport:
-    """How much a non-point-in-time adjustment can move THIS signal. See module docs."""
-
     max_abs_momentum_difference: float
     n_compared: int
     split_factor: float
@@ -675,17 +506,7 @@ def ratio_invariance_report(
     split_factor: float = 2.0,
     split_offset_days: int = 5,
 ) -> RatioInvarianceReport:
-    """Quantify the exposure the module docstring argues is zero, rather than asserting it.
-
-    Takes a real price panel, injects a *future* split into it by back-adjusting every
-    price before an artificial event date, and measures how far the momentum signal
-    moves at every date **before** that event. The claim under test is that it does not
-    move at all, because a constant factor applied to both endpoints of a ratio cancels.
-
-    Reporting a measured number instead of an argument is the point: if the signal ever
-    stops being a pure ratio, this stops returning zero.
-    """
-    from .xsmom import cross_sectional_momentum  # local import: keeps xsmom dependency-free
+    from .xsmom import cross_sectional_momentum
 
     if split_offset_days < 1:
         raise ValueError("the injected split must be in the future")
@@ -700,8 +521,6 @@ def ratio_invariance_report(
     adjusted.iloc[:event_position] = adjusted.iloc[:event_position] / split_factor
     after = cross_sectional_momentum(adjusted, formation_days, skip_days)
 
-    # Only dates strictly before the event are covered by the invariance claim; on and
-    # after it the two series legitimately differ, because one of them has had a split.
     compare_to = prices.index[event_position - 1]
     a = base.loc[:compare_to].to_numpy()
     b = after.loc[:compare_to].to_numpy()
@@ -721,7 +540,6 @@ def ratio_invariance_report(
 
 
 def write_snapshot_metadata(path: Path, source_url: str, n: int) -> dict:
-    """Record a snapshot's provenance beside it. Used by the fetch script."""
     meta = {
         "source_url": source_url,
         "retrieved_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),

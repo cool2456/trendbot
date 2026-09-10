@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""PREREG_002.md section 7's protocol, cross-sectional momentum.
-
-Driven from ``scripts/run_backtest.py --experiment 002``; this module holds the
-commands so that experiment 001's script stays the length it was.
-
-Every reporting choice this file makes that PREREG_002.md does not fix is stated in
-the output as it is made, not left to the reader to reverse-engineer.
-"""
 
 from __future__ import annotations
 
@@ -41,8 +33,6 @@ from trendbot.strategies import CrossSectionalMomentum
 
 RESULTS_DIR = Path(__file__).resolve().parent.parent / "results"
 
-# Reporting choices, not strategy parameters. Section 6's frozen list contains none of
-# them and none can change a position.
 DEFAULT_NOISE_SEEDS = 16
 FACTOR_SHARES = (0.25, 0.5)
 WORST_MONTHS = 5
@@ -56,11 +46,6 @@ def _load(cfg: Config002, source: str):
     prices = load_prices(cfg.universe, source=source)
     rf = load_risk_free_rate()
     return prices, rf, daily_risk_free(rf, prices.close.index)
-
-
-# --------------------------------------------------------------------------------------
-# step 1 - universe verification
-# --------------------------------------------------------------------------------------
 
 
 def report_universe(cfg: Config002, prices) -> UniverseVerification:
@@ -88,11 +73,6 @@ def report_universe(cfg: Config002, prices) -> UniverseVerification:
         )
         print(holes.to_frame("missing bars").T.to_string())
     return verification
-
-
-# --------------------------------------------------------------------------------------
-# step 3 - the two noise tests
-# --------------------------------------------------------------------------------------
 
 
 def cmd_noise(cfg: Config002, args) -> int:
@@ -177,11 +157,6 @@ def cmd_noise(cfg: Config002, args) -> int:
     return 0 if passed else 1
 
 
-# --------------------------------------------------------------------------------------
-# steps 4-8 - the full protocol
-# --------------------------------------------------------------------------------------
-
-
 def _run(cfg: Config002, prices, rf, *, cost_bps=None, targets=None):
     strategy = None if targets is not None else CrossSectionalMomentum(cfg)
     return run_panel_backtest(
@@ -190,19 +165,13 @@ def _run(cfg: Config002, prices, rf, *, cost_bps=None, targets=None):
         strategy,
         targets=targets,
         cost_bps=cfg.cost_bps_per_side if cost_bps is None else cost_bps,
-        drift_band=None,  # section 5: "No drift band. Full rebalance ... each month."
+        drift_band=None,
         gross_cap=cfg.gross_exposure_cap,
         risk_free=rf,
     )
 
 
 def _psr(cfg: Config002, returns: pd.Series):
-    """PSR(0) and the deflated Sharpe at the cumulative counter of 2 configurations.
-
-    The deflation term needs the variance of the per-period Sharpe ratios across the
-    configurations actually tried. There are exactly two and both are known: experiment
-    001's recorded result and this one. Nothing is estimated or assumed.
-    """
     own = float(returns.mean()) / float(returns.std(ddof=1))
     trials = (EXPERIMENT_001_NET_SHARPE / math.sqrt(TRADING_DAYS_PER_YEAR), own)
     return deflated_sharpe_ratio(returns, cfg.configurations_tried, trial_sharpes=trials), trials
@@ -364,10 +333,6 @@ def report_backtest(cfg: Config002, prices, rf, rf_daily, *, save: bool):
         + ("" if study.is_monotonic else f" — {study.n_inversions} of {cfg.n_quantiles - 1} steps invert")
     )
 
-    # Q1 and section 3's traded portfolio are the same set of instruments, so at zero
-    # cost the book's own open-to-open return must BE Q1's series. Checked here rather
-    # than asserted, because if they ever diverge the monotonicity gate has stopped
-    # being a statement about the strategy that was actually run.
     free = _run(cfg, prices, rf, cost_bps=0.0, targets=targets)
     equity_open = free.diagnostics["equity_open"]
     equity_open = equity_open[equity_open.index >= start]

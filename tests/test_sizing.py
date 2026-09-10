@@ -1,11 +1,3 @@
-"""Tests for trendbot.sizing - section 4 risk scaling, section 5 drift band, and the
-whole-share rounding that is build step 3's acceptance gate.
-
-Everything here is offline and seeded. Expected numbers in the arithmetic tests are
-recomputed by hand from PREREGISTRATION.md section 4 rather than read back from the
-implementation.
-"""
-
 from __future__ import annotations
 
 import math
@@ -23,7 +15,6 @@ from trendbot.sizing import (
     whole_share_allocation,
 )
 
-# Real closes as of 2026-08-18, used by the build-step-3 gate test.
 GATE_PRICES = {
     "SPY": 767.45,
     "EFA": 107.27,
@@ -39,7 +30,6 @@ GATE_PRICES = {
     "VNQ": 97.62,
 }
 
-# Plausible annualised vols for the same twelve instruments.
 GATE_SIGMAS = {
     "SPY": 0.14,
     "EFA": 0.15,
@@ -58,13 +48,7 @@ GATE_SIGMAS = {
 DATE = pd.Timestamp("2026-08-18")
 
 
-# --------------------------------------------------------------------------------------
-# helpers
-# --------------------------------------------------------------------------------------
-
-
 def _series(cfg, mapping, default=0.0) -> pd.Series:
-    """A universe-ordered Series with ``mapping`` overlaid on ``default``."""
     s = pd.Series(float(default), index=list(cfg.universe))
     for k, v in mapping.items():
         s[k] = v
@@ -99,23 +83,7 @@ def _allocation_table(alloc: ShareAllocation) -> str:
     )
 
 
-# --------------------------------------------------------------------------------------
-# section 4 arithmetic, hand-computed
-# --------------------------------------------------------------------------------------
-
-
 def test_target_weights_reproduces_hand_computed_section_4_chain_equal_sigmas(cfg):
-    """Five active instruments, all sigma=0.10, worked through by hand.
-
-    x_i      = 1 * (0.10 / 0.10)                    = 1.0
-    w_raw_i  = 1.0 / 12                             = 0.0833333...
-    exante   = sqrt(5) * (0.0833333 * 0.10)         = 0.0186338998...
-    k        = 0.10 / exante = 12 / sqrt(5)         = 5.366563146
-    w_i      = 0.0833333 * k = 1/sqrt(5)            = 0.4472135955
-    clip     -> 0.25 each                           (all five breach the 0.25 cap)
-    gross    = 5 * 0.25 = 1.25 > 1.0                -> rescale by 1/1.25
-    final    = 0.20 each
-    """
     active = list(cfg.universe)[:5]
     trend = _series(cfg, {t: 1.0 for t in active})
     sigma = _series(cfg, {}, default=0.10)
@@ -135,22 +103,10 @@ def test_target_weights_reproduces_hand_computed_section_4_chain_equal_sigmas(cf
 
 
 def test_target_weights_reproduces_hand_computed_section_4_chain_mixed_sigmas(cfg):
-    """Five active instruments with different sigmas; the 0.25 cap binds on three.
-
-    sigma:   SPY 0.08  EFA 0.16  EEM 0.20  TLT 0.10  FXY 0.25
-    x_i    = 0.10/sigma_i:      1.25    0.625    0.50     1.00     0.40
-    w_raw  = x_i/12:        0.1041667 0.0520833 0.0416667 0.0833333 0.0333333
-    Each w_raw_i * sigma_i = 0.10/12 = 0.00833333 by construction, so
-    exante = sqrt(5) * 0.00833333 = 0.0186338998 and k = 12/sqrt(5) = 5.366563146.
-    after k:                0.5590170 0.2795085 0.2236068 0.4472136 0.1788854
-    clip at 0.25:           0.25      0.25      0.2236068 0.25      0.1788854
-    gross  = 1.1524922 > 1.0 -> divide by 1.1524922
-    final:                  0.2169212 0.2169212 0.1940202 0.2169212 0.1552162
-    """
     sig = {"SPY": 0.08, "EFA": 0.16, "EEM": 0.20, "TLT": 0.10, "FXY": 0.25}
     active = list(sig)
     trend = _series(cfg, {t: 1.0 for t in active})
-    sigma = _series(cfg, sig, default=0.15)  # the inactive sigmas must not matter
+    sigma = _series(cfg, sig, default=0.15)
 
     tw = target_weights(DATE, trend, sigma, cfg, covariance="diagonal")
 
@@ -178,7 +134,6 @@ def test_target_weights_reproduces_hand_computed_section_4_chain_mixed_sigmas(cf
 
 
 def test_k_scales_exante_vol_to_exactly_the_portfolio_target(cfg):
-    """The comment on section 4's k line: k scales ex-ante vol to 10% annualised."""
     trend = _series(cfg, {t: 1.0 for t in list(cfg.universe)[:7]})
     sigma = _series(cfg, {}, default=0.22)
     cov = _equicorrelated_cov(sigma, 0.25)
@@ -189,13 +144,6 @@ def test_k_scales_exante_vol_to_exactly_the_portfolio_target(cfg):
 
 
 def test_divisor_is_the_fixed_universe_size_not_the_active_count(cfg):
-    """w_i = x_i / 12 even with two active names (section 2 fixes the universe).
-
-    k cancels any constant divisor, so the observable consequences are the raw
-    pre-scaling weights and k itself: with N=12 and two active names at sigma=0.10,
-    w_raw = 1/12 and k = 12/sqrt(2) = 8.485. Had the divisor been the active count 2,
-    w_raw would be 0.5 and k would be 2/sqrt(2) = 1.414.
-    """
     active = ["SPY", "GLD"]
     trend = _series(cfg, {t: 1.0 for t in active})
     sigma = _series(cfg, {}, default=0.10)
@@ -206,13 +154,11 @@ def test_divisor_is_the_fixed_universe_size_not_the_active_count(cfg):
     assert tw.raw[active].tolist() == pytest.approx([1.0 / 12, 1.0 / 12], abs=1e-15)
     assert tw.k == pytest.approx(12.0 / math.sqrt(2.0), rel=1e-12)
     assert tw.k != pytest.approx(2.0 / math.sqrt(2.0), rel=1e-3)
-    # the inactive ten stay at zero rather than absorbing the freed budget
     assert tw.raw.drop(active).abs().sum() == 0.0
     assert tw.weights.drop(active).abs().sum() == 0.0
 
 
 def test_inactive_instruments_do_not_get_the_freed_risk_budget(cfg):
-    """Dropping an instrument from the signal must not enlarge anyone else's raw weight."""
     sigma = _series(cfg, {}, default=0.12)
     all_on = target_weights(DATE, _series(cfg, {}, default=1.0), sigma, cfg, covariance="diagonal")
     ten_on = target_weights(
@@ -226,25 +172,14 @@ def test_inactive_instruments_do_not_get_the_freed_risk_budget(cfg):
     assert ten_on.raw[survivors].tolist() == pytest.approx(all_on.raw[survivors].tolist(), abs=1e-15)
 
 
-# --------------------------------------------------------------------------------------
-# section 4 post-conditions
-# --------------------------------------------------------------------------------------
-
-
 def test_caps_hold_over_many_random_draws(cfg):
-    """|w_i| <= 0.25 and sum|w_i| <= 1.0 must hold for every input, always.
-
-    600 seeded draws (300 per covariance method) mixing long-only and long-short
-    signals, lognormal sigmas, and deliberately poisoned sigmas (NaN and 0).
-    Observed worst case: max|w_i| = 0.25 exactly, max gross = 1.0 + 4e-16.
-    """
     rng = np.random.default_rng(20260819)
     universe = list(cfg.universe)
     worst_abs = 0.0
     worst_gross = 0.0
 
     for i in range(300):
-        low = 0 if i % 2 else -1  # alternate long-only and long-short signals
+        low = 0 if i % 2 else -1
         trend = pd.Series(rng.integers(low, 2, size=12).astype(float), index=universe)
         sigma = pd.Series(np.exp(rng.normal(math.log(0.15), 0.8, size=12)), index=universe)
         sigma[rng.random(12) < 0.15] = np.nan
@@ -268,12 +203,11 @@ def test_caps_hold_over_many_random_draws(cfg):
             worst_abs = max(worst_abs, float(w.abs().max()))
             worst_gross = max(worst_gross, float(w.abs().sum()))
 
-    assert worst_abs == pytest.approx(0.25, abs=1e-12)  # the cap is reached, not just respected
+    assert worst_abs == pytest.approx(0.25, abs=1e-12)
     assert worst_gross == pytest.approx(1.0, abs=1e-9)
 
 
 def test_caps_hold_on_a_realistic_synthetic_panel(cfg, synth):
-    """Same post-conditions driven by the real vol/covariance estimators, offline."""
     returns = synth.close.pct_change(fill_method=None)
     sigma = annualised_vol(returns, cfg.ewma_halflife_days)
     cov = ewma_covariance(returns, cfg.ewma_halflife_days)
@@ -289,11 +223,6 @@ def test_caps_hold_on_a_realistic_synthetic_panel(cfg, synth):
         assert tw.weights.abs().max() <= cfg.per_instrument_cap + 1e-12
         assert tw.gross <= cfg.gross_exposure_cap + 1e-9
         assert (tw.weights >= -1e-15).all(), "long-only variant must never go short"
-
-
-# --------------------------------------------------------------------------------------
-# section 4 degenerate inputs
-# --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("bad_sigma", [np.nan, 0.0])
@@ -321,8 +250,6 @@ def test_a_nan_row_in_the_covariance_matrix_does_not_poison_the_other_weights(cf
     tw = target_weights(DATE, trend, sigma, cfg, cov=cov, covariance="full")
     assert tw.weights["FXY"] == 0.0
     assert not tw.weights.isna().any()
-    # eleven survivors, equal sigma, rho=0.3: exante = (0.10/12) * sqrt(11 + 110*0.3),
-    # k = 12/sqrt(44), so each weight is (0.10/0.18)/sqrt(44) = 0.0837531
     expected = (0.10 / 0.18) / math.sqrt(44.0)
     assert tw.weights.drop("FXY").tolist() == pytest.approx([expected] * 11, rel=1e-12)
     assert tw.gross == pytest.approx(11 * expected, rel=1e-12)
@@ -354,8 +281,7 @@ def test_all_sigmas_unusable_gives_all_zero_weights(cfg):
 
 
 def test_missing_trend_entries_are_treated_as_no_position(cfg):
-    """The signal is undefined until 252 bars exist; section 3 says that means 0."""
-    trend = pd.Series({"SPY": 1.0, "GLD": 1.0})  # the other ten are simply absent
+    trend = pd.Series({"SPY": 1.0, "GLD": 1.0})
     sigma = _series(cfg, {}, default=0.15)
     tw = target_weights(DATE, trend, sigma, cfg, covariance="diagonal")
     assert list(tw.weights.index) == list(cfg.universe)
@@ -363,19 +289,7 @@ def test_missing_trend_entries_are_treated_as_no_position(cfg):
     assert tw.weights.drop(["SPY", "GLD"]).abs().sum() == 0.0
 
 
-# --------------------------------------------------------------------------------------
-# covariance method
-# --------------------------------------------------------------------------------------
-
-
 def test_diagonal_and_full_agree_exactly_when_the_gross_cap_binds(cfg):
-    """Under a pure rescale to gross 1.0, k cancels, so the two methods coincide.
-
-    Twelve active names at sigma=0.15 with rho=0.30: k_diagonal = 3.4641 and
-    k_full = 1.6705 - materially different - yet no weight reaches the 0.25 cap and
-    the gross cap binds in both cases, so both collapse to 1/12 each.
-    Observed max elementwise difference: 1.4e-17.
-    """
     trend = _series(cfg, {}, default=1.0)
     sigma = _series(cfg, {}, default=0.15)
     cov = _equicorrelated_cov(sigma, 0.30)
@@ -394,10 +308,6 @@ def test_diagonal_and_full_agree_exactly_when_the_gross_cap_binds(cfg):
 
 
 def test_diagonal_and_full_differ_when_the_gross_cap_does_not_bind(cfg):
-    """With gross below 1.0 nothing renormalises k away, so correlation changes sizes.
-
-    Four active names at sigma=0.40, rho=0.50: gross is 0.50 diagonal vs 0.316 full.
-    """
     active = list(cfg.universe)[:4]
     trend = _series(cfg, {t: 1.0 for t in active})
     sigma = _series(cfg, {}, default=0.40)
@@ -411,8 +321,6 @@ def test_diagonal_and_full_differ_when_the_gross_cap_does_not_bind(cfg):
     assert diag.gross == pytest.approx(0.5, rel=1e-12)
     assert full.gross == pytest.approx(1.0 / math.sqrt(10.0), rel=1e-12)
     assert (diag.weights - full.weights).abs().max() > 0.04
-    # positive correlation means the full estimate sees more portfolio risk, so it
-    # takes less of it
     assert full.gross < diag.gross
 
 
@@ -430,16 +338,10 @@ def test_unknown_covariance_method_raises(cfg):
         target_weights(DATE, trend, sigma, cfg, covariance="shrinkage")  # type: ignore[arg-type]
 
 
-# --------------------------------------------------------------------------------------
-# section 5 drift band
-# --------------------------------------------------------------------------------------
-
-
 def test_instrument_inside_the_band_keeps_its_current_weight(cfg):
     target = pd.Series({"SPY": 0.10, "GLD": 0.10})
     current = pd.Series({"SPY": 0.09, "GLD": 0.10})
     out = apply_drift_band(target, current, cfg.drift_band)
-    # |0.10 - 0.09| = 0.01, threshold 0.20 * 0.10 = 0.02 -> no trade
     assert out["SPY"] == pytest.approx(0.09)
     assert out["GLD"] == pytest.approx(0.10)
 
@@ -448,47 +350,32 @@ def test_instrument_outside_the_band_moves_all_the_way_to_target(cfg):
     target = pd.Series({"SPY": 0.10, "TLT": -0.10})
     current = pd.Series({"SPY": 0.05, "TLT": 0.00})
     out = apply_drift_band(target, current, cfg.drift_band)
-    # a partial move to the edge of the band would be a different rule; section 5
-    # says trade, and the target is what you trade to
     assert out["SPY"] == pytest.approx(0.10)
     assert out["TLT"] == pytest.approx(-0.10)
 
 
 def test_deviation_exactly_equal_to_the_threshold_does_not_trade(cfg):
-    """The rule is a strict '>': equality is inside the band.
-
-    0.15 / 0.12 is chosen because |0.15 - 0.12| and 0.20 * 0.15 are the *same*
-    float64 (0.03), so this really is the boundary and not a near-miss.
-    """
     target = pd.Series({"SPY": 0.15, "EEM": -0.15})
     current = pd.Series({"SPY": 0.12, "EEM": -0.12})
-    assert abs(0.15 - 0.12) == 0.20 * 0.15  # exact equality at float64 precision
+    assert abs(0.15 - 0.12) == 0.20 * 0.15
 
     out = apply_drift_band(target, current, cfg.drift_band)
     assert out["SPY"] == 0.12
     assert out["EEM"] == -0.12
 
-    # one ulp further out and it does trade
     nudged = pd.Series({"SPY": np.nextafter(0.12, 0.0), "EEM": -0.12})
     out2 = apply_drift_band(target, nudged, cfg.drift_band)
     assert out2["SPY"] == pytest.approx(0.15)
 
 
 def test_zero_target_always_closes_a_non_zero_position(cfg):
-    """Documented behaviour: at w_target == 0 the threshold collapses to zero.
-
-    |0 - w_current| > 0.20 * 0 == 0 is true for any non-zero holding, so a name whose
-    trend has switched off is always fully exited, however small the residual.
-    """
     target = pd.Series({"SPY": 0.0, "EFA": 0.0, "GLD": 0.0})
     current = pd.Series({"SPY": 0.30, "EFA": 1e-12, "GLD": -0.05})
     out = apply_drift_band(target, current, cfg.drift_band)
     assert out.tolist() == [0.0, 0.0, 0.0]
 
-    # and a band of any size cannot rescue the position
     assert apply_drift_band(target, current, 5.0).tolist() == [0.0, 0.0, 0.0]
 
-    # zero target with zero current is a no-op, not a spurious trade
     flat = apply_drift_band(target, pd.Series({"SPY": 0.0, "EFA": 0.0, "GLD": 0.0}), cfg.drift_band)
     assert flat.tolist() == [0.0, 0.0, 0.0]
 
@@ -496,8 +383,8 @@ def test_zero_target_always_closes_a_non_zero_position(cfg):
 def test_drift_band_treats_a_missing_current_position_as_flat(cfg):
     target = pd.Series({"SPY": 0.10, "GLD": 0.10})
     out = apply_drift_band(target, pd.Series({"SPY": 0.10}), cfg.drift_band)
-    assert out["SPY"] == pytest.approx(0.10)  # unchanged, inside the band
-    assert out["GLD"] == pytest.approx(0.10)  # from flat, |0.10| > 0.02 -> trade
+    assert out["SPY"] == pytest.approx(0.10)
+    assert out["GLD"] == pytest.approx(0.10)
 
 
 def test_zero_band_trades_on_any_non_zero_deviation():
@@ -515,51 +402,33 @@ def test_negative_drift_band_raises():
 
 
 def test_drift_band_can_lift_gross_above_the_section_4_cap(cfg):
-    """The band is not cap-preserving, which is why every caller must re-clip.
-
-    Both inputs respect section 4 (target gross 1.00, current gross 0.68) yet the
-    banded output is levered at 1.08: SPY drifted up but stayed inside its own band
-    so it is not sold back, while EFA is bought all the way to target.
-    ``backtest.run_backtest`` and ``runner`` both re-apply the gross cap immediately
-    after calling this function; a caller that forgets to is running leverage.
-    """
     target = pd.Series({"SPY": 0.50, "EFA": 0.50})
     current = pd.Series({"SPY": 0.58, "EFA": 0.10})
     assert target.abs().sum() <= cfg.gross_exposure_cap
     assert current.abs().sum() <= cfg.gross_exposure_cap
 
     out = apply_drift_band(target, current, cfg.drift_band)
-    assert out["SPY"] == pytest.approx(0.58)  # |0.08| <= 0.20 * 0.50, held
-    assert out["EFA"] == pytest.approx(0.50)  # |0.40| >  0.20 * 0.50, traded
+    assert out["SPY"] == pytest.approx(0.58)
+    assert out["EFA"] == pytest.approx(0.50)
     assert out.abs().sum() == pytest.approx(1.08)
     assert out.abs().sum() > cfg.gross_exposure_cap
 
-    # the overshoot is bounded: an untraded leg is at most (1 + band) * |target|
     assert out.abs().sum() <= (1 + cfg.drift_band) * target.abs().sum() + 1e-12
 
 
 def test_drift_band_can_hold_a_position_above_the_per_instrument_cap(cfg):
-    """Same non-preservation for the 0.25 cap, and nothing downstream re-clips it.
-
-    A name sized to exactly the cap that then drifts to 0.28 is inside its band
-    (|0.03| <= 0.20 * 0.25 = 0.05) so it is not trimmed. Unlike the gross cap, no
-    caller re-applies the per-instrument cap after the band - see the returned
-    discrepancy note.
-    """
     target = pd.Series({"SPY": cfg.per_instrument_cap})
     current = pd.Series({"SPY": 0.28})
     out = apply_drift_band(target, current, cfg.drift_band)
     assert out["SPY"] == pytest.approx(0.28)
     assert out["SPY"] > cfg.per_instrument_cap
 
-    # worst case is exactly (1 + band) * cap = 0.30
     edge = pd.Series({"SPY": cfg.per_instrument_cap * (1 + cfg.drift_band)})
     held = apply_drift_band(target, edge, cfg.drift_band)
     assert held["SPY"] == pytest.approx(0.30)
 
 
 def test_drift_band_output_is_elementwise_either_target_or_current(cfg):
-    """Whatever the band decides, it never invents a third value (no partial moves)."""
     rng = np.random.default_rng(7)
     universe = list(cfg.universe)
     for _ in range(100):
@@ -567,15 +436,9 @@ def test_drift_band_output_is_elementwise_either_target_or_current(cfg):
         current = pd.Series(rng.uniform(-0.25, 0.25, size=12), index=universe)
         out = apply_drift_band(target, current, cfg.drift_band)
         assert ((out == target) | (out == current)).all()
-        # and the decision is exactly the documented predicate
         expected_trade = (target - current).abs() > cfg.drift_band * target.abs()
         assert (out[expected_trade] == target[expected_trade]).all()
         assert (out[~expected_trade] == current[~expected_trade]).all()
-
-
-# --------------------------------------------------------------------------------------
-# BUILD STEP 3 GATE
-# --------------------------------------------------------------------------------------
 
 
 def _gate_allocations(cfg) -> tuple[pd.Series, ShareAllocation, ShareAllocation]:
@@ -591,30 +454,18 @@ def _gate_allocations(cfg) -> tuple[pd.Series, ShareAllocation, ShareAllocation]
 
 
 def test_gate_small_account_versus_large_account_tracking_error(cfg):
-    """BUILD STEP 3 GATE: realised vs target weights at $1,000 and at $100,000.
-
-    Observed with the 2026-08-18 closes and the vols in GATE_SIGMAS:
-        $100,000 -> 12/12 holdable, L2 tracking error 0.00644, 98.8% of the risk
-                    budget deployed.
-        $1,000   -> 5/12 holdable, L2 tracking error 0.20747 (32x worse), 40.8% of
-                    the risk budget deployed. SPY, EFA, EEM, GLD, SLV, FXE and VNQ
-                    are silently absent: one share costs more than their entire
-                    target allocation.
-    """
     weights, small, large = _gate_allocations(cfg)
     table = _allocation_table(small) + "\n" + _allocation_table(large)
-    print(table)  # visible under `pytest -s`, and in the assertion messages below
+    print(table)
 
     assert weights.abs().sum() == pytest.approx(1.0, abs=1e-9), table
 
-    # --- $100,000: everything is holdable and rounding barely matters ---
     assert large.n_holdable == 12, f"expected all twelve holdable at $100,000{table}"
     assert bool(large.holdable.all()), table
     assert large.tracking_error < 0.02, (
         f"L2 tracking error at $100,000 is {large.tracking_error:.5f}, expected < 0.02{table}"
     )
 
-    # --- $1,000: strictly fewer sleeves and an order of magnitude worse tracking ---
     assert small.n_holdable < 12, f"expected fewer than twelve holdable at $1,000{table}"
     assert small.n_holdable < large.n_holdable, (
         f"$1,000 holds {small.n_holdable} sleeves, $100,000 holds {large.n_holdable}{table}"
@@ -627,7 +478,6 @@ def test_gate_small_account_versus_large_account_tracking_error(cfg):
         f"L2 tracking error at $1,000 is only {small.tracking_error:.5f}{table}"
     )
 
-    # the sleeves that vanish are exactly those whose target dollars buy no share
     unaffordable = set(small.target_dollars.index[small.target_dollars < small.prices])
     absent = set(small.shares.index[small.shares == 0])
     assert absent == unaffordable, table
@@ -637,20 +487,13 @@ def test_gate_small_account_versus_large_account_tracking_error(cfg):
 def test_gate_risk_budget_deployed_collapses_on_a_small_account(cfg):
     _, small, large = _gate_allocations(cfg)
     table = _allocation_table(small) + "\n" + _allocation_table(large)
-    # observed: 0.9879 at $100,000, 0.4079 at $1,000
     assert large.risk_budget_deployed > 0.98, table
     assert large.risk_budget_deployed <= 1.0 + 1e-12, table
     assert small.risk_budget_deployed < 0.60, table
     assert small.risk_budget_deployed < large.risk_budget_deployed / 2, table
 
 
-# --------------------------------------------------------------------------------------
-# whole-share rounding
-# --------------------------------------------------------------------------------------
-
-
 def test_rounding_is_toward_zero_so_realised_gross_never_exceeds_target_gross(cfg):
-    """This is what keeps section 4's gross cap true after rounding to whole shares."""
     rng = np.random.default_rng(4242)
     universe = list(cfg.universe)
     prices = pd.Series(GATE_PRICES).reindex(universe)
@@ -659,13 +502,12 @@ def test_rounding_is_toward_zero_so_realised_gross_never_exceeds_target_gross(cf
         raw = rng.normal(size=12) * rng.choice([0.0, 1.0], size=12, p=[0.3, 0.7])
         if not np.any(raw):
             continue
-        weights = pd.Series(raw / np.abs(raw).sum(), index=universe)  # gross exactly 1.0
+        weights = pd.Series(raw / np.abs(raw).sum(), index=universe)
         equity = float(rng.uniform(500, 250_000))
         alloc = whole_share_allocation(weights, prices, equity)
 
         assert alloc.realised_weights.abs().sum() <= alloc.target_weights.abs().sum() + 1e-12
         assert alloc.realised_dollars.abs().sum() <= alloc.target_dollars.abs().sum() + 1e-9
-        # per instrument too, and the sign is never flipped by rounding
         assert (alloc.realised_dollars.abs() <= alloc.target_dollars.abs() + 1e-9).all()
         assert (np.sign(alloc.shares) * np.sign(alloc.target_dollars) >= 0).all()
         assert alloc.realised_weights.abs().sum() <= 1.0 + 1e-12
@@ -675,7 +517,6 @@ def test_short_leg_rounds_toward_zero_not_away_from_it():
     weights = pd.Series({"A": -0.37, "B": 0.37})
     prices = pd.Series({"A": 100.0, "B": 100.0})
     alloc = whole_share_allocation(weights, prices, 1_000.0)
-    # -$370 / $100 = -3.7 -> -3 shares, not -4
     assert alloc.shares.tolist() == [-3, 3]
     assert alloc.realised_dollars.abs().sum() == pytest.approx(600.0)
 
@@ -685,7 +526,7 @@ def test_target_below_one_share_price_gives_zero_shares_and_is_not_holdable():
     prices = pd.Series({"CHEAP": 10.0, "DEAR": 100.0})
     alloc = whole_share_allocation(weights, prices, 1_000.0)
 
-    assert alloc.target_dollars["DEAR"] == pytest.approx(4.0)  # $4 will not buy a $100 share
+    assert alloc.target_dollars["DEAR"] == pytest.approx(4.0)
     assert alloc.shares["DEAR"] == 0
     assert alloc.realised_dollars["DEAR"] == 0.0
     assert alloc.realised_weights["DEAR"] == 0.0
@@ -694,7 +535,6 @@ def test_target_below_one_share_price_gives_zero_shares_and_is_not_holdable():
     assert bool(alloc.holdable["CHEAP"]) is True
     assert alloc.n_holdable == 1
     assert alloc.n_wanted == 2
-    # nothing warns; the sleeve is simply gone
     assert alloc.drift["DEAR"] == pytest.approx(-0.004)
 
 
@@ -708,7 +548,6 @@ def test_one_cent_short_of_a_share_still_gives_zero_shares():
 
 
 def test_zero_target_weight_counts_as_holdable():
-    """A sleeve you did not want is not a sleeve you failed to buy."""
     weights = pd.Series({"A": 0.5, "B": 0.0})
     prices = pd.Series({"A": 10.0, "B": 1e6})
     alloc = whole_share_allocation(weights, prices, 1_000.0)
@@ -739,7 +578,7 @@ def test_risk_budget_fully_deployed_when_every_target_is_an_exact_share_count(cf
     universe = list(cfg.universe)
     weights = pd.Series(1.0 / 12, index=universe)
     prices = pd.Series(1.0, index=universe)
-    alloc = whole_share_allocation(weights, prices, 1_200.0)  # $100 per sleeve, $1 shares
+    alloc = whole_share_allocation(weights, prices, 1_200.0)
     assert alloc.shares.tolist() == [100] * 12
     assert alloc.risk_budget_deployed == pytest.approx(1.0, abs=1e-12)
     assert alloc.tracking_error == pytest.approx(0.0, abs=1e-15)
@@ -753,7 +592,6 @@ def test_tracking_error_and_absolute_error_agree_with_the_drift_vector(cfg):
     assert small.drift.tolist() == pytest.approx(drift.tolist(), abs=1e-15)
     assert small.tracking_error == pytest.approx(float(np.sqrt((drift**2).sum())), rel=1e-12)
     assert small.absolute_error == pytest.approx(float(drift.abs().sum()), rel=1e-12)
-    # rounding toward zero can only shrink a position, so every drift is <= 0 here
     assert (small.drift <= 1e-15).all()
 
 
@@ -802,7 +640,7 @@ def test_non_positive_price_raises(bad_price):
 
 def test_allocation_ignores_prices_for_instruments_not_in_the_weight_vector():
     weights = pd.Series({"A": 1.0})
-    prices = pd.Series({"A": 10.0, "GHOST": -5.0})  # a bad price outside the universe
+    prices = pd.Series({"A": 10.0, "GHOST": -5.0})
     alloc = whole_share_allocation(weights, prices, 1_000.0)
     assert list(alloc.prices.index) == ["A"]
     assert alloc.shares.tolist() == [100]

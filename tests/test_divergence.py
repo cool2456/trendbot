@@ -1,11 +1,3 @@
-"""The divergence log: predicted versus realised, on every run.
-
-PREREGISTRATION.md section 7 step 6 requires this for the whole six-month paper
-period, so it has to survive the awkward cases - an order that never filled, an order
-the broker has no record of, a position someone changed by hand - without losing data
-or throwing.
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -45,7 +37,6 @@ def test_the_log_is_append_only_json_lines(log):
     lines = log.path.read_text().splitlines()
     assert len(lines) == 3
     assert [json.loads(line)["kind"] for line in lines] == ["prediction", "prediction", "note"]
-    # a second write appends rather than truncating
     log.record_predictions([_prediction(coid="c")])
     assert len(log.path.read_text().splitlines()) == 4
 
@@ -65,7 +56,6 @@ def test_unreconciled_tracks_what_is_still_outstanding(log):
 
 def test_reconcile_computes_slippage_signed_so_positive_is_worse(log):
     broker = MockBroker(prices={"SPY": 101.0})
-    # a buy that filled at 101 against a 100 reference is 100 bps of adverse slippage
     broker.submit("SPY", 10, OrderSide.BUY, "c1")
     log.record_predictions([_prediction(coid="c1", ref=100.0, after=10.0)])
     (result,) = log.reconcile(broker, "r2")
@@ -80,14 +70,13 @@ def test_a_sell_filling_below_the_reference_is_also_positive_slippage(log):
     broker.submit("SPY", 10, OrderSide.SELL, "c1")
     log.record_predictions([_prediction(coid="c1", side="sell", ref=100.0, after=0.0)])
     (result,) = log.reconcile(broker, "r2")
-    # sold at 99 against a 100 reference: 100 bps worse for us, reported positive
     assert result.price_divergence_bps == pytest.approx(100.0)
 
 
 def test_position_divergence_is_measured_against_the_broker_not_the_prediction(log):
     broker = MockBroker(prices={"SPY": 100.0})
     broker.submit("SPY", 10, OrderSide.BUY, "c1")
-    broker._shares["SPY"] = 7.0  # someone sold 3 by hand
+    broker._shares["SPY"] = 7.0
     log.record_predictions([_prediction(coid="c1", after=10.0)])
     (result,) = log.reconcile(broker, "r2")
     assert result.broker_position == 7.0
@@ -102,7 +91,6 @@ def test_an_order_still_open_stays_unreconciled(log):
     log.record_predictions([_prediction(coid="c1")])
     assert log.reconcile(broker, "r2") == []
     assert len(log.unreconciled()) == 1
-    # once it reaches a terminal state it reconciles
     broker._orders[-1] = dataclasses.replace(order, status="filled", filled_qty=10.0)
     assert len(log.reconcile(broker, "r3")) == 1
     assert log.unreconciled() == []
@@ -114,7 +102,6 @@ def test_an_order_the_broker_has_never_heard_of_is_logged_not_raised(log):
     assert log.reconcile(broker, "r2") == []
     notes = log.entries("note")
     assert any("not found at broker" in n["message"] for n in notes)
-    # it stays outstanding, so the discrepancy is not silently dropped
     assert len(log.unreconciled()) == 1
 
 
@@ -139,7 +126,7 @@ def test_reconcile_is_idempotent(log):
     broker.submit("SPY", 10, OrderSide.BUY, "c1")
     log.record_predictions([_prediction(coid="c1")])
     assert len(log.reconcile(broker, "r2")) == 1
-    assert log.reconcile(broker, "r3") == []  # nothing left outstanding
+    assert log.reconcile(broker, "r3") == []
     assert len(log.entries("reconciliation")) == 1
 
 

@@ -1,37 +1,3 @@
-"""The three sleeve return series of PREREG_006.md section 2, and their benchmarks.
-
-Experiment 006 introduces no signal. Every series this module returns is produced by
-running an earlier experiment's **committed, unmodified** implementation, which is why
-this file contains no strategy logic at all: it is a manifest and a set of call sites.
-
-The rule the module exists to enforce
---------------------------------------
-Section 6: "Sleeve returns are taken from each experiment's existing, committed
-implementation. No re-implementation, no re-parameterisation." That is easy to state
-and easy to breach by accident, so :func:`reproduce` re-derives each sleeve's own
-headline Sharpe and refuses to hand the series onward unless it matches the number that
-experiment recorded in its findings document. A sleeve whose Sharpe has drifted means a
-*prior* result has drifted, and the correct response is to stop and report it rather
-than to allocate to it.
-
-One breach in particular has no natural safety net. Sleeve C is replayed on a
-carry-adjusted price panel using target weights computed on the **spot** panel — that
-replay is what keeps experiment 005's configuration counter at four, because no signal
-is recomputed and so no selection is possible. Recomputing the signal on the
-carry-adjusted panel instead does not fail, does not warn, and does not produce a NaN:
-it produces ``0.315``, which is *better* than the correct ``0.209``. Nothing in the
-engine will catch it. :func:`load_sleeve_c` therefore passes ``targets=`` explicitly and
-asserts the engine recorded the run as precomputed.
-
-Excess returns, once
---------------------
-Every series returned here is already in excess of the 13-week T-bill: the engines
-accrue the rate on idle cash and ``excess_returns`` subtracts the same rate, and the
-hand-built benchmark series subtract :func:`~trendbot.data.daily_risk_free` exactly
-once. Nothing downstream may subtract it again — see FINDINGS_006.md on the double
-subtraction.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -64,21 +30,10 @@ __all__ = [
     "ReproductionCheck",
 ]
 
-# Experiment 005's quintile bucket convention, declared in scripts/run_experiment_005.py
-# as a reporting choice rather than a pre-registered parameter. Sleeve C must be built
-# with the same one the headline used or it is a different sleeve.
 _SLEEVE_C_BUCKET_METHOD = "even"
 
-# Section 4 says only "005's daily-rebalanced dollar factor" and does not say whether it
-# carries the same carry correction section 2 applies to sleeve C itself. Both readings
-# are implemented; neither is a default. See FINDINGS_006.md.
 BENCHMARK_VARIANTS = ("carry-corrected", "spot-only")
 
-# Recorded outputs of the earlier experiments — NOT parameters, and not editable to make
-# a gate pass. Provenance of each number is given: 001's two come from
-# trendbot/regression.py at full precision, which is itself the committed regression
-# target; the rest are stated in their findings documents to three decimal places, which
-# is therefore the precision the gate can assert.
 SLEEVE_MANIFEST: tuple[dict, ...] = (
     {
         "label": "A",
@@ -87,7 +42,7 @@ SLEEVE_MANIFEST: tuple[dict, ...] = (
         "recorded_sharpe": EXPERIMENT_001_NET_SHARPE,
         "recorded_benchmark_sharpe": EXPERIMENT_001_BENCHMARK_SHARPE,
         "decimals": 3,
-        "exact": True,  # trendbot/regression.py carries full precision
+        "exact": True,
         "benchmark_name": "equal-weight 12-ETF buy-and-hold",
         "source": "FINDINGS.md / trendbot/regression.py",
     },
@@ -115,16 +70,12 @@ SLEEVE_MANIFEST: tuple[dict, ...] = (
     },
 )
 
-# The spot-only reading of section 4 for sleeve C, recorded so the alternative benchmark
-# is gated exactly as the headline one is. FINDINGS_005.md section 9.
 SLEEVE_C_SPOT_BENCHMARK_SHARPE = -0.431
 SLEEVE_C_SPOT_STRATEGY_SHARPE = -0.271
 
 
 @dataclass(frozen=True, slots=True)
 class Sleeve:
-    """One sleeve: its own returns, its own benchmark, and its own recorded result."""
-
     label: str
     experiment: str
     name: str
@@ -160,8 +111,6 @@ class Sleeve:
 
 @dataclass(frozen=True, slots=True)
 class ReproductionCheck:
-    """Section 6's gate: every sleeve reproduces its own committed headline."""
-
     rows: pd.DataFrame
     passed: bool
 
@@ -175,8 +124,6 @@ class ReproductionCheck:
 
 @dataclass(frozen=True, slots=True)
 class SleeveSet:
-    """The three sleeves of section 2, on their own calendars, before alignment."""
-
     sleeves: tuple[Sleeve, ...]
     benchmark_variant: str
 
@@ -206,20 +153,7 @@ def _manifest(label: str) -> dict:
     raise KeyError(f"no manifest entry for sleeve {label!r}")
 
 
-# --------------------------------------------------------------------------------------
-# sleeve A - experiment 001
-# --------------------------------------------------------------------------------------
-
-
 def load_sleeve_a(*, source: str = "yahoo", full_history: bool = False) -> Sleeve:
-    """Experiment 001's headline: time-series trend over the twelve ETFs of section 2.
-
-    The window is ``full_universe_start`` — the first bar on which every instrument has
-    a complete 252-day lookback — through the last bar of the data, which is exactly
-    what ``EXPERIMENT_001_WINDOW`` records. The backtest is run over the *full* history
-    and sliced afterwards, because slicing the prices first would change the state the
-    engine carries into the window.
-    """
     cfg = load_config()
     prices = load_prices(cfg.universe, source=source)
     rf = load_risk_free_rate()
@@ -234,8 +168,6 @@ def load_sleeve_a(*, source: str = "yahoo", full_history: bool = False) -> Sleev
         name=entry["name"],
         benchmark_name=entry["benchmark_name"],
         returns=result.excess_returns.loc[start:],
-        # Section 8 of PREREGISTRATION.md, read literally: bought once at the start of
-        # the window, then held. This is the construction FINDINGS.md headlines.
         benchmark=(buy_and_hold(prices, cfg, rebalance="none", start=start) - rf_daily).loc[start:],
         recorded_sharpe=entry["recorded_sharpe"],
         recorded_benchmark_sharpe=entry["recorded_benchmark_sharpe"],
@@ -245,17 +177,7 @@ def load_sleeve_a(*, source: str = "yahoo", full_history: bool = False) -> Sleev
     )
 
 
-# --------------------------------------------------------------------------------------
-# sleeve B - experiment 002
-# --------------------------------------------------------------------------------------
-
-
 def load_sleeve_b(*, source: str = "yahoo", full_history: bool = False) -> Sleeve:
-    """Experiment 002's headline: top-quintile cross-sectional momentum over 41 ETFs.
-
-    The window is section 6's pre-committed ``2008-01-01 to present``; history before it
-    forms the signal and is measured for nothing.
-    """
     cfg = load_config_002()
     prices = load_prices(cfg.universe, source=source)
     rf = load_risk_free_rate()
@@ -269,7 +191,7 @@ def load_sleeve_b(*, source: str = "yahoo", full_history: bool = False) -> Sleev
         None,
         targets=targets,
         cost_bps=cfg.cost_bps_per_side,
-        drift_band=None,  # PREREG_002 section 5: full rebalance each month
+        drift_band=None,
         gross_cap=cfg.gross_exposure_cap,
         risk_free=rf,
     )
@@ -291,13 +213,7 @@ def load_sleeve_b(*, source: str = "yahoo", full_history: bool = False) -> Sleev
     )
 
 
-# --------------------------------------------------------------------------------------
-# sleeve C - experiment 005, carry-corrected
-# --------------------------------------------------------------------------------------
-
-
 def _last_complete_session(index: pd.DatetimeIndex) -> pd.Timestamp:
-    """The last session strictly before today — experiment 005's own end-of-data rule."""
     earlier = index[index < pd.Timestamp.today().normalize()]
     if len(earlier) == 0:
         raise ValueError("no completed session in the exchange rate history")
@@ -305,18 +221,6 @@ def _last_complete_session(index: pd.DatetimeIndex) -> pd.Timestamp:
 
 
 def load_sleeve_c(*, benchmark_variant: str, refresh: bool = False, full_history: bool = False) -> Sleeve:
-    """Experiment 005's **carry-corrected** result — PREREG_005 section 4's diagnostic.
-
-    The correction is the foreign interest accrual and nothing else: the same target
-    weights, computed once on the spot panel, are replayed against a price panel in
-    which each currency is a money-market deposit rather than the bare currency. That
-    replay is what keeps 005's configuration counter at four, and re-deriving the signal
-    on the carry-adjusted panel would break it silently — see the module docstring.
-
-    ``benchmark_variant`` selects the reading of PREREG_006 section 4 for this sleeve's
-    benchmark and has no default, because the two readings move section 8's first clause
-    across zero.
-    """
     if benchmark_variant not in BENCHMARK_VARIANTS:
         raise ValueError(
             f"unknown benchmark variant {benchmark_variant!r}; expected one of {BENCHMARK_VARIANTS}"
@@ -331,7 +235,6 @@ def load_sleeve_c(*, benchmark_variant: str, refresh: bool = False, full_history
     start = prices.close.index[0] if full_history else pd.Timestamp(cfg.sample_start)
     members = list(universe.universe)
 
-    # THE signal, computed once, on the SPOT panel.
     targets = CurrencyCrossSectionalMomentum(cfg, universe.universe, _SLEEVE_C_BUCKET_METHOD)(
         price_panel(prices, members)
     )
@@ -349,7 +252,7 @@ def load_sleeve_c(*, benchmark_variant: str, refresh: bool = False, full_history
         total,
         members,
         None,
-        targets=targets,  # REPLAYED, never recomputed - see the module docstring
+        targets=targets,
         cost_bps=cfg.cost_bps_per_side,
         drift_band=None,
         gross_cap=cfg.gross_exposure_cap,
@@ -388,11 +291,6 @@ def load_sleeve_c(*, benchmark_variant: str, refresh: bool = False, full_history
     )
 
 
-# --------------------------------------------------------------------------------------
-# the set, and section 6's reproduction gate
-# --------------------------------------------------------------------------------------
-
-
 def load_sleeves(
     *,
     benchmark_variant: str,
@@ -400,16 +298,6 @@ def load_sleeves(
     refresh: bool = False,
     full_history: bool = False,
 ) -> SleeveSet:
-    """Load all three sleeves of section 2. No selection step exists, by design.
-
-    ``full_history`` reads section 5's "available histories" as the raw extent of each
-    experiment's computable return series rather than as its pre-committed window. It is
-    a **sensitivity, not the headline**, and it changes what sleeve B is: only 20 of
-    002's 41 ETFs had listed by 1999, so an earlier start makes sleeve B a
-    top-quintile-of-20 strategy. Section 2 forbids that as a construction; it is run
-    here only so section 9's stated expectation can be tested rather than merely
-    contradicted, and the reproduction gate is not applied to it.
-    """
     return SleeveSet(
         sleeves=(
             load_sleeve_a(source=source, full_history=full_history),
@@ -423,11 +311,6 @@ def load_sleeves(
 
 
 def reproduce(sleeve_set: SleeveSet) -> ReproductionCheck:
-    """Assert every sleeve still produces the Sharpe its own findings document records.
-
-    A failure here is not a failure of experiment 006. It means a *prior* result has
-    drifted, and the only correct response is to stop and report that.
-    """
     rows = []
     for sleeve in sleeve_set.sleeves:
         realised = sleeve.realised_sharpe
@@ -438,7 +321,6 @@ def reproduce(sleeve_set: SleeveSet) -> ReproductionCheck:
         benchmark_ok = round(realised_bench, sleeve.decimals) == round(
             sleeve.recorded_benchmark_sharpe, sleeve.decimals
         )
-        # 001 carries its recorded value at full precision, so it is held to it.
         if sleeve.exact:
             strategy_ok = strategy_ok and realised == sleeve.recorded_sharpe
             benchmark_ok = benchmark_ok and realised_bench == sleeve.recorded_benchmark_sharpe

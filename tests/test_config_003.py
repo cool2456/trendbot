@@ -1,15 +1,3 @@
-"""PREREG_003.md is the sole source of truth, and the parser refuses to guess.
-
-Same contract as ``tests/test_config.py`` and ``tests/test_config_002.py``: every
-parameter is pulled out of the document, a missing one is fatal rather than defaulted,
-an ambiguous one is fatal rather than resolved, and a document that contradicts itself
-is fatal rather than half-applied.
-
-Experiment 003's universe is a *rule* rather than a list, so what is pinned here is the
-rule's text - the index name, the history requirement, the expected yield - and the
-resolution against a dated snapshot is tested in ``tests/test_equities.py``.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -41,11 +29,6 @@ def _parse(text: str, tmp_path: Path) -> Config003:
     return load_config_003(path, use_cache=False)
 
 
-# --------------------------------------------------------------------------------------
-# what the document says
-# --------------------------------------------------------------------------------------
-
-
 def test_every_parameter_comes_out_of_the_document(cfg003):
     assert cfg003.configurations_tried == 3, "the cumulative counter, not 2"
     assert cfg003.index_name == "S&P 500"
@@ -74,12 +57,10 @@ def test_every_parameter_comes_out_of_the_document(cfg003):
 
 
 def test_the_mandatory_crash_months_expand_to_an_explicit_list(cfg003):
-    """"March-May 2009 and April 2020" is prose; the check needs a set."""
     assert cfg003.required_crash_months == ("2009-03", "2009-04", "2009-05", "2020-04")
 
 
 def test_the_signal_is_identical_to_experiment_002(cfg003):
-    """Section 3 keeps 002's formula on purpose, "so the universe is the only variable"."""
     from trendbot.config_002 import load_config_002
 
     cfg002 = load_config_002()
@@ -107,11 +88,6 @@ def test_the_config_is_frozen_and_holds_nothing_mutable(cfg003):
         assert isinstance(value, immutable), f"{field.name} holds a mutable {type(value).__name__}"
 
 
-# --------------------------------------------------------------------------------------
-# the parser refuses to guess
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "victim",
     [
@@ -123,6 +99,8 @@ def test_the_config_is_frozen_and_holds_nothing_mutable(cfg003):
         "Expected yield 300–400 names. Report the exact count.",
     ],
 )
+
+
 def test_deleting_any_parameter_is_fatal_rather_than_defaulted(text, tmp_path, victim):
     assert victim in text, f"fixture is stale: {victim!r} is no longer in the document"
     with pytest.raises(ConfigParseError):
@@ -130,7 +108,6 @@ def test_deleting_any_parameter_is_fatal_rather_than_defaulted(text, tmp_path, v
 
 
 def test_deleting_a_clause_that_carries_no_number_is_also_fatal(text, tmp_path):
-    """The clauses easiest to lose are the ones with nothing to parse out of them."""
     for clause in (
         "- Fails to beat equal-weight buy-and-hold at all, OR",
         "- Alpha to market is negative, OR",
@@ -147,12 +124,6 @@ def test_deleting_a_clause_that_carries_no_number_is_also_fatal(text, tmp_path):
 
 
 def test_deleting_section_2s_survivorship_direction_is_fatal(text, tmp_path):
-    """The verdict must state both readings; the document's own words are the source.
-
-    Section 2's claim that the bias *flattens the gradient* is what makes a failure
-    ambiguous rather than decisive. Losing it from the document would quietly turn an
-    ambiguous result into a clean one, so its absence is a parse error.
-    """
     for clause in (
         "artificially **narrow** and the monotonicity gradient artificially **flat**",
         "a monotonicity pass on this universe is conservative evidence",
@@ -169,11 +140,6 @@ def test_an_ambiguous_parameter_is_fatal_rather_than_resolved(text, tmp_path):
     )
     with pytest.raises(ConfigParseError, match="ambiguous"):
         _parse(doubled, tmp_path)
-
-
-# --------------------------------------------------------------------------------------
-# a document that contradicts itself is fatal
-# --------------------------------------------------------------------------------------
 
 
 def test_a_bucket_word_that_disagrees_with_its_own_restatement_is_fatal(text, tmp_path):
@@ -196,7 +162,6 @@ def test_a_headline_cost_outside_its_own_ladder_is_fatal(text, tmp_path):
 
 
 def test_an_abandon_threshold_above_the_support_threshold_is_fatal(text, tmp_path):
-    """A rule with no inconclusive band between its two t-statistics is incoherent."""
     broken = text.replace("D1−D10 t-statistic below 1.0", "D1−D10 t-statistic below 3.0")
     with pytest.raises(ConfigParseError, match="no inconclusive band"):
         _parse(broken, tmp_path)
@@ -207,13 +172,7 @@ def test_an_expected_universe_range_that_runs_backwards_is_fatal(text, tmp_path)
         _parse(text.replace("Expected yield 300–400 names", "Expected yield 400–300 names"), tmp_path)
 
 
-# --------------------------------------------------------------------------------------
-# the document itself is frozen
-# --------------------------------------------------------------------------------------
-
-
 def test_prereg_003_is_unmodified_relative_to_git_head():
-    """Editing sections 2-6 after seeing a result produces experiment 004, not a fix."""
     proc = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "status", "--porcelain", "--", "PREREG_003.md"],
         capture_output=True,

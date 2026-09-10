@@ -1,23 +1,3 @@
-"""Hard invariant 2 — there is exactly one signal implementation.
-
-BUILD_PROMPT.md::
-
-    2. **One signal implementation.** Backtest and live import the same function
-       object. Test that hashes the signal module and fails if two definitions
-       exist.
-
-The failure mode this file exists to prevent is the quiet one: someone copies the
-three lines of ``sign(P_t / P_{t-252} - 1)`` into the runner "just to avoid the
-import", the two copies drift, and the paper record stops being evidence about the
-backtested strategy. So there are four independent locks here:
-
-* object identity between the engine and :mod:`trendbot.signal`,
-* a spy proving the engine actually *calls* that object rather than merely
-  importing it,
-* a content hash of ``trendbot/signal.py``, and
-* an AST sweep of the whole repository for a second definition.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -36,20 +16,6 @@ SIGNAL_PATH = REPO_ROOT / "trendbot" / "signal.py"
 BACKTEST_PATH = REPO_ROOT / "trendbot" / "engine" / "backtest.py"
 RUNNER_PATH = REPO_ROOT / "trendbot" / "runner.py"
 
-# sha256 of the bytes of trendbot/signal.py.
-#
-# This constant is a lock on the strategy definition, not a checksum for its own
-# sake. PREREGISTRATION.md section 3 fixes the signal and section 6 lists it as
-# frozen; its opening paragraph says that any change to the frozen numbers "produces
-# a new strategy with a new version number and a new date, and its results may not
-# be compared to, or substituted for, this one".
-#
-# Therefore: if this test fails, the correct response is almost never to paste in
-# the new hash. It is to decide whether the edit changed the *definition* of the
-# signal. If it did, that is a new strategy — bump the version and the date in
-# PREREGISTRATION.md, re-run the section 7 protocol from step 1, and only then
-# update this constant. If it genuinely did not (a typo in a docstring, say),
-# updating it is a deliberate, reviewable act that should be its own commit.
 SIGNAL_SHA256 = "514570198370cfa3503a3406d62dc552bd99c9ae78a30a3c97e488899af3db60"
 
 _HASH_FAILURE_NOTE = (
@@ -67,7 +33,6 @@ _HASH_FAILURE_NOTE = (
     "      in its own commit, with the diff visible in review."
 )
 
-# Directories that are not part of the repository's own source.
 _SKIP_DIRS = frozenset(
     {
         ".venv",
@@ -82,13 +47,12 @@ _SKIP_DIRS = frozenset(
         "dist",
         "node_modules",
         "data",
-        "tests",  # test fixtures are allowed to build throwaway signal look-alikes
+        "tests",
     }
 )
 
 
 def _repo_python_files() -> list[Path]:
-    """Every first-party .py file in the repository, tests and .venv excluded."""
     files = []
     for path in sorted(REPO_ROOT.rglob("*.py")):
         rel = path.relative_to(REPO_ROOT)
@@ -102,17 +66,12 @@ def _parse(path: Path) -> ast.Module:
     source = path.read_text(encoding="utf-8")
     try:
         return ast.parse(source, filename=str(path))
-    except SyntaxError as exc:  # a half-written module must not pass silently
+    except SyntaxError as exc:
         pytest.fail(f"{path.relative_to(REPO_ROOT)} does not parse: {exc}")
 
 
 def _rel(path: Path) -> str:
     return path.relative_to(REPO_ROOT).as_posix()
-
-
-# --------------------------------------------------------------------------------------
-# static import graph, used to prove the live path reaches the same module
-# --------------------------------------------------------------------------------------
 
 
 def _module_path(modname: str) -> Path | None:
@@ -125,7 +84,6 @@ def _module_path(modname: str) -> Path | None:
 
 
 def _direct_trendbot_imports(modname: str) -> set[str]:
-    """Modules inside the ``trendbot`` package that ``modname`` imports directly."""
     path = _module_path(modname)
     if path is None:
         return set()
@@ -149,7 +107,6 @@ def _direct_trendbot_imports(modname: str) -> set[str]:
             if not target.startswith("trendbot"):
                 continue
             found.add(target)
-            # `from trendbot import signal` names a submodule, not an attribute.
             for alias in node.names:
                 if _module_path(f"{target}.{alias.name}") is not None:
                     found.add(f"{target}.{alias.name}")
@@ -168,13 +125,7 @@ def _trendbot_import_closure(root: str) -> set[str]:
     return seen
 
 
-# --------------------------------------------------------------------------------------
-# 1. identity
-# --------------------------------------------------------------------------------------
-
-
 def test_backtest_engine_holds_the_same_signal_function_object():
-    """The engine's module attribute IS trendbot.signal.trend_signal, not a copy."""
     assert backtest_module.trend_signal is signal_module.trend_signal, (
         "trendbot.engine.backtest.trend_signal is a different object from "
         "trendbot.signal.trend_signal — the engine has its own copy of the strategy."
@@ -183,7 +134,6 @@ def test_backtest_engine_holds_the_same_signal_function_object():
 
 
 def test_run_backtest_calls_the_module_level_signal_name():
-    """The identity check above is only meaningful if run_backtest calls that name."""
     tree = _parse(BACKTEST_PATH)
     functions = [
         node
@@ -205,12 +155,6 @@ def test_run_backtest_calls_the_module_level_signal_name():
 
 
 def test_engine_routes_its_signal_through_the_shared_function(monkeypatch, cfg, synth):
-    """Replacing the shared function changes what the engine computes.
-
-    Behavioural counterpart to the identity check: a second, inlined momentum
-    calculation inside the engine would leave the identity assertion passing while
-    this spy records zero calls.
-    """
     real = signal_module.trend_signal
     calls: list[tuple[int, bool]] = []
 
@@ -228,25 +172,14 @@ def test_engine_routes_its_signal_through_the_shared_function(monkeypatch, cfg, 
     assert len(result.equity) == len(synth.close)
 
 
-# --------------------------------------------------------------------------------------
-# 2. content hash
-# --------------------------------------------------------------------------------------
-
-
 def test_signal_module_bytes_match_the_pre_registered_hash():
     digest = hashlib.sha256(SIGNAL_PATH.read_bytes()).hexdigest()
     assert digest == SIGNAL_SHA256, f"{_HASH_FAILURE_NOTE}\n\nexpected {SIGNAL_SHA256}\nactual   {digest}"
 
 
 def test_signal_module_declares_its_identity_string():
-    """SIGNAL_ID travels with results; it must describe the rule section 3 states."""
     assert signal_module.SIGNAL_ID
     assert "sign(" in signal_module.SIGNAL_ID
-
-
-# --------------------------------------------------------------------------------------
-# 3. exactly one definition, in the right file
-# --------------------------------------------------------------------------------------
 
 
 def test_exactly_one_trend_signal_definition_in_the_repository():
@@ -270,12 +203,6 @@ def test_exactly_one_trend_signal_definition_in_the_repository():
 
 
 def test_no_second_momentum_sign_implementation_outside_signal_py():
-    """No other module both takes a sign and shifts a series.
-
-    That pairing is the fingerprint of ``sign(P_t / P_{t-n} - 1)``. The engine may
-    shift (that is the execution lag) and nothing else may take a momentum sign, so
-    a file doing both is a copy-paste of the strategy.
-    """
     offenders: list[str] = []
     for path in _repo_python_files():
         if path == SIGNAL_PATH:
@@ -300,11 +227,6 @@ def test_no_second_momentum_sign_implementation_outside_signal_py():
     )
 
 
-# --------------------------------------------------------------------------------------
-# 4. the live path and the backtest path reach the same object
-# --------------------------------------------------------------------------------------
-
-
 def test_backtest_import_closure_reaches_trendbot_signal():
     assert "trendbot.signal" in _trendbot_import_closure("trendbot.engine.backtest")
 
@@ -324,8 +246,6 @@ def test_live_runner_reaches_the_same_signal_object():
 
     runner = importlib.import_module("trendbot.runner")
 
-    # The runner imports the name directly; if that ever stops being true the
-    # closure check above still holds the line.
     if hasattr(runner, "trend_signal"):
         assert runner.trend_signal is signal_module.trend_signal, (
             "trendbot.runner.trend_signal is not trendbot.signal.trend_signal — the "

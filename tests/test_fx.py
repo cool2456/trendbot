@@ -1,12 +1,3 @@
-"""The quote-convention gate and the panel construction, offline.
-
-The whole of experiment 005 rests on one claim: every series in the panel is the USD
-value of one unit of a foreign currency. PREREG_005.md section 2 says an inverted subset
-"scrambles every rank silently without raising an error", so the tests that matter here
-are the ones that show the checks would **fail** on a panel that was wrong. A test that
-only shows the correct panel passes is compatible with a check that always passes.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -53,11 +44,6 @@ GBP = meta(
 )
 
 
-# --------------------------------------------------------------------------------------
-# direction, read from metadata and never from values
-# --------------------------------------------------------------------------------------
-
-
 def test_foreign_per_usd_is_recognised_and_inverted():
     convention = parse_quote_convention(YEN)
     assert convention.direction == FOREIGN_PER_USD
@@ -74,9 +60,7 @@ def test_usd_per_foreign_is_recognised_and_left_alone():
 
 
 def test_direction_does_not_depend_on_the_values():
-    """The parser never sees a number, which is the entire point of section 2's rule."""
     assert parse_quote_convention(YEN).inverted is True
-    # Same metadata, values that look like a USD-per-foreign series. Direction unchanged.
     series = pd.Series([1.2, 1.3], index=pd.to_datetime(["2020-01-01", "2020-01-02"]))
     assert normalise_to_usd(series, parse_quote_convention(YEN)).tolist() == [1 / 1.2, 1 / 1.3]
 
@@ -119,13 +103,7 @@ def test_non_positive_values_become_holes_not_infinities():
     assert out.iloc[1:3].isna().all()
 
 
-# --------------------------------------------------------------------------------------
-# the verification checks must FAIL on a wrong panel
-# --------------------------------------------------------------------------------------
-
-
 def _correct_panel() -> tuple[pd.DataFrame, dict]:
-    """A tiny panel whose levels are the ones the reference table asserts."""
     index = pd.bdate_range("1999-01-04", "2026-08-14")
     levels = {
         "DEXJPUS": 0.0095,
@@ -157,7 +135,6 @@ def test_reference_levels_pass_on_a_correct_panel():
 
 
 def test_every_reference_band_would_catch_an_inversion():
-    """A band the reciprocal also satisfies tests nothing at all."""
     frame, conventions = _correct_panel()
     for check in check_reference_levels(frame, conventions):
         assert check.discriminating, f"{check.series_id}'s band would not catch an inversion"
@@ -173,7 +150,6 @@ def test_peg_checks_fail_when_either_leg_is_inverted():
     frame, _ = _correct_panel()
     assert all(c.passed for c in check_peg_relationships(frame))
 
-    # The Danish check is a cross-rate, so inverting EITHER series must break it.
     for leg in ("DEXUSEU", "DEXDNUS"):
         broken = frame.copy()
         broken[leg] = 1.0 / broken[leg]
@@ -208,11 +184,6 @@ def test_drift_check_fails_on_an_implausibly_compounding_series():
     assert not check_drift_plausibility(exploding, conventions)[0].passed
 
 
-# --------------------------------------------------------------------------------------
-# the calendar, the gaps and the fill
-# --------------------------------------------------------------------------------------
-
-
 def _raw(index, values):
     return pd.Series(values, index=index, dtype=float)
 
@@ -222,9 +193,8 @@ def test_publication_calendar_is_the_union_of_days_anything_published():
     a = _raw(index, [1.0, np.nan, 3.0, 4.0])
     b = _raw(index, [np.nan, 2.0, np.nan, 4.0])
     calendar = publication_calendar({"A": a, "B": b}, "2020-01-01")
-    assert list(calendar) == list(index)  # every date had at least one publication
+    assert list(calendar) == list(index)
 
-    # A date on which NOTHING published is not a trading day and must not appear.
     c = _raw(index, [1.0, np.nan, 3.0, 4.0])
     d = _raw(index, [1.0, np.nan, 3.0, 4.0])
     calendar = publication_calendar({"C": c, "D": d}, "2020-01-01")
@@ -251,12 +221,10 @@ def test_measure_gaps_reports_the_longest_run_of_missing_days():
 
 
 def test_the_holiday_allowance_is_longer_than_any_national_market_closure():
-    """Chinese New Year is the longest of these and runs about eight business days."""
     assert MAX_HOLIDAY_GAP_DAYS > 8
 
 
 def test_forward_fill_carries_values_forward_only():
-    """``B`` publishes every day, so ``A``'s holes are real bars that must be filled."""
     index = pd.bdate_range("2020-01-01", periods=6)
     a = _raw(index, [1.0, np.nan, np.nan, 4.0, np.nan, 6.0])
     b = _raw(index, np.ones(6))
@@ -285,7 +253,6 @@ def test_a_later_observation_cannot_change_an_earlier_filled_value():
 
 
 def test_a_date_only_one_series_published_is_still_a_bar():
-    """Exactly the 2005-09-05 case: one currency printed, the rest are filled across it."""
     index = pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-03"])
     only = _raw(index, [1.0, 2.0, 3.0])
     other = _raw(index, [10.0, np.nan, 30.0])
@@ -299,8 +266,8 @@ def test_forward_fill_panel_index_is_the_union_of_member_observations():
     b = _raw(pd.to_datetime(["2020-01-02", "2020-01-03"]), [3.0, 4.0])
     panel = forward_fill_panel({"A": a, "B": b}, ["A", "B"], upper_bound=pd.Timestamp("2020-01-03"))
     assert list(panel.index) == list(pd.to_datetime(["2020-01-01", "2020-01-02", "2020-01-03"]))
-    assert np.isnan(panel.loc["2020-01-01", "B"])  # B had not started
-    assert panel.loc["2020-01-02", "A"] == 1.0  # A carried forward
+    assert np.isnan(panel.loc["2020-01-01", "B"])
+    assert panel.loc["2020-01-02", "A"] == 1.0
 
 
 def test_forward_fill_panel_stops_at_the_upper_bound():
@@ -309,37 +276,30 @@ def test_forward_fill_panel_stops_at_the_upper_bound():
     assert panel.index[-1] == index[4]
 
 
-# --------------------------------------------------------------------------------------
-# the dollar factor
-# --------------------------------------------------------------------------------------
-
-
 def test_equal_weight_factor_is_the_mean_of_the_column_returns():
     index = pd.bdate_range("2020-01-01", periods=3)
     frame = pd.DataFrame({"A": [100.0, 110.0, 110.0], "B": [100.0, 100.0, 90.0]}, index=index)
     factor = equal_weight_factor(frame)
-    assert factor.iloc[0] == 0.0  # no previous bar
-    assert factor.iloc[1] == pytest.approx(0.05)  # (+10% + 0%) / 2
-    assert factor.iloc[2] == pytest.approx(-0.05)  # (0% + -10%) / 2
+    assert factor.iloc[0] == 0.0
+    assert factor.iloc[1] == pytest.approx(0.05)
+    assert factor.iloc[2] == pytest.approx(-0.05)
 
 
 def test_equal_weight_factor_ignores_a_column_that_has_not_started():
     index = pd.bdate_range("2020-01-01", periods=3)
     frame = pd.DataFrame({"A": [100.0, 110.0, 121.0], "B": [np.nan, np.nan, 100.0]}, index=index)
     factor = equal_weight_factor(frame)
-    assert factor.iloc[1] == pytest.approx(0.10)  # B contributes nothing, and does not halve it
-    assert factor.iloc[2] == pytest.approx(0.10)  # B's first bar is not a return
+    assert factor.iloc[1] == pytest.approx(0.10)
+    assert factor.iloc[2] == pytest.approx(0.10)
 
 
 def test_equal_weight_factor_is_never_nan():
-    """The engine refuses a NaN return, so a factor with a hole would fail downstream."""
     index = pd.bdate_range("2020-01-01", periods=4)
     frame = pd.DataFrame({"A": [np.nan, np.nan, 100.0, 101.0]}, index=index)
     assert not equal_weight_factor(frame).isna().any()
 
 
 def test_reference_table_covers_both_quote_directions():
-    """A table of only inverted series would leave the untouched ones unverified."""
     ids = {series_id for series_id, *_ in REFERENCE_LEVELS}
-    assert "DEXUSEU" in ids or "DEXUSUK" in ids  # a USD-per-foreign series
-    assert "DEXJPUS" in ids  # a foreign-per-USD series
+    assert "DEXUSEU" in ids or "DEXUSUK" in ids
+    assert "DEXJPUS" in ids

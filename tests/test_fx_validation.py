@@ -1,10 +1,3 @@
-"""Experiment 005's decision rule, its clustering diagnostic and its carry arithmetic.
-
-The decision rule is tested as a truth table rather than on real numbers: section 8 has
-four support clauses and five abandon clauses, and the failure that matters is a clause
-that is present in the document and absent from the code.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -26,7 +19,6 @@ def cfg005():
 
 
 def verdict(cfg, **overrides) -> str:
-    """A comfortably supported result, with the named clause pushed out of range."""
     baseline = dict(
         strategy_sharpe=0.90,
         benchmark_sharpe=0.20,
@@ -39,11 +31,6 @@ def verdict(cfg, **overrides) -> str:
     return evaluate_decision_rule_005(cfg, **{**baseline, **overrides}).verdict
 
 
-# --------------------------------------------------------------------------------------
-# section 8, clause by clause
-# --------------------------------------------------------------------------------------
-
-
 def test_the_baseline_is_supported(cfg005):
     assert verdict(cfg005) == "SUPPORTED"
 
@@ -53,13 +40,11 @@ def test_sharpe_below_the_support_threshold_is_not_supported(cfg005):
 
 
 def test_the_support_threshold_is_strict(cfg005):
-    """"exceeds **0.40**" - exactly 0.40 does not exceed it."""
     assert verdict(cfg005, strategy_sharpe=0.40, benchmark_sharpe=0.10) != "SUPPORTED"
     assert verdict(cfg005, strategy_sharpe=0.4001, benchmark_sharpe=0.10) == "SUPPORTED"
 
 
 def test_the_benchmark_margin_is_inclusive(cfg005):
-    """"by at least **0.15**" - exactly 0.15 satisfies it."""
     assert verdict(cfg005, strategy_sharpe=0.90, benchmark_sharpe=0.75) == "SUPPORTED"
     assert verdict(cfg005, strategy_sharpe=0.90, benchmark_sharpe=0.7501) != "SUPPORTED"
 
@@ -90,7 +75,6 @@ def test_sharpe_below_the_abandon_threshold_abandons(cfg005):
 
 
 def test_a_negative_sharpe_that_still_beats_the_benchmark_abandons(cfg005):
-    """Experiment 005's actual shape: better than the dollar factor, and still bad."""
     decision = evaluate_decision_rule_005(
         cfg005,
         strategy_sharpe=-0.27,
@@ -105,7 +89,6 @@ def test_a_negative_sharpe_that_still_beats_the_benchmark_abandons(cfg005):
     fired = [name for name, ok, _ in decision.abandon_clauses if ok]
     assert "net Sharpe below 0.15" in fired
     assert any("t-statistic below" in name for name in fired)
-    # It does beat the benchmark, and the margin clause is the one thing that passes.
     assert decision.support_clauses[1][1] is True
 
 
@@ -140,11 +123,6 @@ def test_verdict_string_lists_every_clause(cfg005):
     assert text.count("[YES]") + text.count("[NO ]") == 9
 
 
-# --------------------------------------------------------------------------------------
-# section 9's clustering diagnostic
-# --------------------------------------------------------------------------------------
-
-
 def _worst(months):
     return pd.DataFrame(
         {"return": [-0.09, -0.06, -0.05]},
@@ -169,15 +147,9 @@ def test_no_clustering_is_reported_as_the_section_9_warning():
 
 
 def test_a_month_one_off_a_window_does_not_count_as_a_match():
-    """The mapping is literal: adjacency is reported separately, never silently counted."""
     windows = {"2008 Q4": ("2008-10", "2008-11", "2008-12")}
     clustering = worst_month_clustering(_worst(["2008-09", "2008-08", "2007-08"]), windows)
     assert clustering.n_matched == 0
-
-
-# --------------------------------------------------------------------------------------
-# section 4's carry arithmetic
-# --------------------------------------------------------------------------------------
 
 
 def test_zero_rates_leave_prices_untouched():
@@ -199,17 +171,15 @@ def test_a_constant_rate_compounds_at_that_rate():
     spot = pd.DataFrame({"A": np.ones(len(index))}, index=index)
     rates = pd.DataFrame({"A": np.full(len(index), 0.05)}, index=index)
     out = carry_adjusted_prices(spot, rates)["A"]
-    # 252 accruals of 5%/252 after the one-bar lag, so one year of growth.
     assert out.iloc[-1] == pytest.approx(np.exp(0.05), rel=1e-6)
 
 
 def test_the_accrual_uses_the_previous_bar_s_rate():
-    """A rate observed at bar t may not be earned on bar t: that would be lookahead."""
     index = pd.bdate_range("2020-01-01", periods=4)
     spot = pd.DataFrame({"A": np.ones(4)}, index=index)
     rates = pd.DataFrame({"A": [0.0, 0.0, 100.0, 100.0]}, index=index)
     out = carry_adjusted_prices(spot, rates)["A"]
-    assert out.iloc[0] == out.iloc[1] == out.iloc[2] == 1.0  # the jump is not yet earned
+    assert out.iloc[0] == out.iloc[1] == out.iloc[2] == 1.0
     assert out.iloc[3] > 1.0
 
 
@@ -230,11 +200,6 @@ def test_mismatched_panels_are_refused():
     rates = pd.DataFrame({"B": np.zeros(5), "A": np.zeros(5)}, index=index)
     with pytest.raises(ValueError, match="column order"):
         carry_adjusted_prices(spot, rates)
-
-
-# --------------------------------------------------------------------------------------
-# short-rate coverage
-# --------------------------------------------------------------------------------------
 
 
 def test_an_uncovered_currency_is_reported_not_filled():

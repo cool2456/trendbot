@@ -1,16 +1,3 @@
-"""PREREG_006.md must be the sole source of every experiment 006 parameter.
-
-Same contract as :mod:`tests.test_config_005`: no parameter has a default, a missing or
-unparseable value is fatal, and the parsed object is frozen.
-
-What is unusual about this document is how much of it is a *prohibition* rather than a
-parameter — "covariance adapts, nothing else does", "003 is excluded on validity, not
-performance", "configs_tried = 5 is a floor". Those clauses carry no number, so nothing
-downstream would break if they vanished; the experiment would simply become a different
-and worse one, quietly. They are therefore asserted by the parser, and the tests below
-delete each one in turn and require the parse to fail.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -48,21 +35,9 @@ def _parse(modified: str) -> Config006:
 
 
 def _delete(text: str, phrase: str) -> str:
-    """Remove a clause however the markdown happens to have wrapped it.
-
-    The document hard-wraps prose at whatever column the author used, so a literal
-    substring would miss a clause that straddles a line break — and a test that silently
-    deleted nothing would pass for the wrong reason. This uses the parser's own
-    whitespace-flexible matcher and asserts something was actually removed.
-    """
     modified, n = re.subn(_phrase(phrase), "", text)
     assert n >= 1, f"the fixture phrase was not found in the document: {phrase!r}"
     return modified
-
-
-# --------------------------------------------------------------------------------------
-# the parameters, against the document
-# --------------------------------------------------------------------------------------
 
 
 def test_document_is_found_and_hashed(cfg):
@@ -118,11 +93,6 @@ def test_describe_names_the_parameters_and_the_hash(cfg):
     assert cfg.source_sha256[:12] in described
 
 
-# --------------------------------------------------------------------------------------
-# frozen
-# --------------------------------------------------------------------------------------
-
-
 def test_config_rejects_mutation(cfg):
     with pytest.raises(Exception):
         cfg.portfolio_vol_target = 0.20  # type: ignore[misc]
@@ -133,11 +103,6 @@ def test_config_holds_no_mutable_parameter(cfg):
     for name in cfg.__slots__:
         value = getattr(cfg, name)
         assert not isinstance(value, (list, dict, set)), f"{name} is mutable"
-
-
-# --------------------------------------------------------------------------------------
-# the prohibitions - each deleted in turn
-# --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -189,6 +154,8 @@ def test_config_holds_no_mutable_parameter(cfg):
         ),
     ],
 )
+
+
 def test_deleting_a_load_bearing_clause_is_a_parse_error(text, phrase, why):
     with pytest.raises(ConfigParseError):
         _parse(_delete(text, phrase))
@@ -202,13 +169,6 @@ def test_deleting_a_sleeve_row_is_a_parse_error(text):
 
 @pytest.mark.parametrize("label", ["A", "D", "Z"])
 def test_adding_a_sleeve_row_is_a_parse_error(text, label):
-    """A fourth row must be caught whatever it is labelled.
-
-    A label pattern restricted to the three letters that happen to be in the document
-    would make a row labelled D invisible to the parser, so a sleeve could be ADDED and
-    silently ignored - the exact failure section 2's "no sleeve may be added" clause
-    exists to prevent.
-    """
     with_extra = text.replace(
         "| C | 005 |", f"| {label} | 003 | smuggled in |\n| C | 005 |", 1
     )
@@ -222,11 +182,6 @@ def test_removing_sleeve_c_carry_correction_is_a_parse_error(text):
         _parse(_delete(text, "Sleeve C is included despite a negative raw Sharpe."))
 
 
-# --------------------------------------------------------------------------------------
-# the parameters - each removed or made inconsistent in turn
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "phrase",
     [
@@ -237,13 +192,14 @@ def test_removing_sleeve_c_carry_correction_is_a_parse_error(text):
         "applied before renormalisation",
     ],
 )
+
+
 def test_removing_a_parameter_is_a_parse_error_not_a_default(text, phrase):
     with pytest.raises(ConfigParseError):
         _parse(_delete(text, phrase))
 
 
 def test_infeasible_weight_bounds_are_rejected(text):
-    """Three sleeves cannot each hold at most 30% and still sum to one."""
     broken = re.sub(r"maximum \*\*60%\*\*", "maximum **30%**", text)
     assert broken != text
     with pytest.raises(ConfigParseError, match="summing to one"):
@@ -281,12 +237,6 @@ def test_a_missing_document_is_fatal(tmp_path):
 
 
 def test_line_wrapping_does_not_break_a_prose_assertion(text):
-    """Reflowing the prose must change no verdict — only meaning may.
-
-    Table rows are left alone: joining them would destroy the markdown structure section
-    2's sleeve manifest is read from, which would be a change of meaning rather than of
-    layout.
-    """
     lines = text.split("\n")
     reflowed_lines = []
     for line in lines:

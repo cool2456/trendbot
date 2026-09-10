@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""The scheduled paper-trading entrypoint.
-
-    python scripts/run_live.py --dry-run              # plan only, submit nothing
-    python scripts/run_live.py --submit               # send the orders to the PAPER account
-    python scripts/run_live.py --reset-halt --note "…"  # clear the halt flag
-    python scripts/run_live.py --status               # what the broker says, and the halt state
-
-Submitting requires the explicit ``--submit`` flag. There is no argument, config file
-or environment variable that makes this trade a live account: the only broker adapter
-that exists points at ``paper-api.alpaca.markets``, refuses a key without Alpaca's
-``PK`` paper prefix, and the runner independently refuses any broker that does not
-declare ``is_paper``. Enabling live trading would require writing a new adapter and
-editing the guard that rejects it, which is deliberate.
-"""
 
 from __future__ import annotations
 
@@ -69,7 +55,7 @@ def cmd_status(args) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser()
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="plan and check everything, submit nothing")
     mode.add_argument("--submit", action="store_true", help="actually send orders to the paper account")

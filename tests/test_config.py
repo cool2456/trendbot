@@ -1,15 +1,3 @@
-"""Config tests — build step 1 gate, first half: "config round-trips".
-
-Two jobs here.
-
-1. Assert every parameter against the literal text of PREREGISTRATION.md. If the
-   parser ever drifts from the signed document, these fail.
-2. Much more important: prove the parser FAILS LOUDLY. A parser that silently
-   substitutes a default when a line goes missing would make the pre-registration
-   decorative. Each mutation test writes a damaged copy of the document into
-   tmp_path and demands ConfigParseError.
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -26,11 +14,6 @@ PREREG_PATH = REPO_ROOT / "PREREGISTRATION.md"
 PREREG_TEXT = PREREG_PATH.read_text(encoding="utf-8")
 
 
-# --------------------------------------------------------------------------------------
-# helpers for building damaged copies of the document
-# --------------------------------------------------------------------------------------
-
-
 def _write(tmp_path: Path, text: str, name: str = "PREREGISTRATION.md") -> Path:
     path = tmp_path / name
     path.write_text(text, encoding="utf-8")
@@ -38,7 +21,6 @@ def _write(tmp_path: Path, text: str, name: str = "PREREGISTRATION.md") -> Path:
 
 
 def _delete_line(text: str, needle: str) -> str:
-    """Drop the single line containing ``needle``; assert it really was unique."""
     lines = text.splitlines(keepends=True)
     kept = [line for line in lines if needle not in line]
     assert len(kept) == len(lines) - 1, (
@@ -62,11 +44,6 @@ def _duplicate_line(text: str, needle: str) -> str:
 
 def _load_damaged(tmp_path: Path, text: str) -> Config:
     return load_config(_write(tmp_path, text), use_cache=False)
-
-
-# --------------------------------------------------------------------------------------
-# 1. every parameter, against the literal in the document
-# --------------------------------------------------------------------------------------
 
 
 def test_universe_is_the_twelve_tickers_in_document_order(cfg: Config) -> None:
@@ -96,7 +73,6 @@ def test_sleeves_match_the_section_2_table(cfg: Config) -> None:
         "Currency": ("UUP", "FXE", "FXY"),
         "Real assets": ("VNQ",),
     }
-    # five sleeves, in the order the table lists them
     assert list(cfg.sleeves) == ["Equity", "Rates", "Commodities", "Currency", "Real assets"]
     assert [t for tickers in cfg.sleeves.values() for t in tickers] == list(cfg.universe)
 
@@ -138,7 +114,6 @@ def test_execution_parameters(cfg: Config) -> None:
 
 
 def test_configurations_tried_is_recorded_as_one(cfg: Config) -> None:
-    # Section 7 step 5: "If it is ever greater than 1, this document has been violated."
     assert cfg.configurations_tried == 1
 
 
@@ -163,7 +138,6 @@ def test_provenance_fields(cfg: Config) -> None:
 
 
 def test_every_parsed_parameter_appears_verbatim_in_the_document() -> None:
-    """Belt and braces: the numbers above are really in the signed text."""
     for literal in (
         "| Equity | SPY, EFA, EEM |",
         "Lookback: **252 trading days**",
@@ -188,11 +162,6 @@ def test_every_parsed_parameter_appears_verbatim_in_the_document() -> None:
         assert literal in PREREG_TEXT, f"document no longer contains {literal!r}"
 
 
-# --------------------------------------------------------------------------------------
-# 2. round-trip and provenance
-# --------------------------------------------------------------------------------------
-
-
 def test_source_sha256_matches_an_independently_computed_digest(cfg: Config) -> None:
     expected = hashlib.sha256(PREREG_PATH.read_bytes()).hexdigest()
     assert cfg.source_sha256 == expected
@@ -201,7 +170,6 @@ def test_source_sha256_matches_an_independently_computed_digest(cfg: Config) -> 
 
 
 def test_config_round_trips_through_a_byte_identical_copy(tmp_path: Path, cfg: Config) -> None:
-    """Same bytes at a different path -> same parameters and the same content hash."""
     copy = _write(tmp_path, PREREG_TEXT)
     other = load_config(copy, use_cache=False)
 
@@ -209,7 +177,7 @@ def test_config_round_trips_through_a_byte_identical_copy(tmp_path: Path, cfg: C
     assert other.source_sha256 == cfg.source_sha256
 
     parameters = [f.name for f in dataclasses.fields(Config) if f.name != "source_path"]
-    assert len(parameters) >= 25  # guard against fields silently disappearing
+    assert len(parameters) >= 25
     for name in parameters:
         assert getattr(other, name) == getattr(cfg, name), name
 
@@ -218,7 +186,7 @@ def test_one_changed_byte_changes_the_content_hash(tmp_path: Path, cfg: Config) 
     tweaked = PREREG_TEXT + "\n"
     other = load_config(_write(tmp_path, tweaked), use_cache=False)
     assert other.source_sha256 != cfg.source_sha256
-    assert other.lookback_days == cfg.lookback_days  # parameters unchanged, provenance not
+    assert other.lookback_days == cfg.lookback_days
 
 
 def test_find_preregistration_locates_the_repo_document() -> None:
@@ -233,11 +201,6 @@ def test_find_preregistration_refuses_to_fall_back_when_absent(tmp_path: Path) -
         find_preregistration(deep)
 
 
-# --------------------------------------------------------------------------------------
-# 3. the config is genuinely frozen
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("field_name", [f.name for f in dataclasses.fields(Config)])
 def test_every_field_is_immutable(cfg: Config, field_name: str) -> None:
     with pytest.raises((dataclasses.FrozenInstanceError, AttributeError)):
@@ -250,16 +213,12 @@ def test_derived_field_is_immutable_too(cfg: Config) -> None:
 
 
 def test_new_attributes_cannot_be_attached(cfg: Config) -> None:
-    # slots=True keeps a tuned parameter from being bolted on at runtime. (CPython
-    # surfaces this as TypeError rather than AttributeError for frozen+slots classes.)
     with pytest.raises((dataclasses.FrozenInstanceError, AttributeError, TypeError)):
         cfg.tuned_lookback = 200
     assert not hasattr(cfg, "tuned_lookback")
 
 
 def test_sleeve_membership_cannot_be_mutated_in_place(cfg: Config) -> None:
-    # sleeves is wrapped in a MappingProxyType: freezing the dataclass freezes the
-    # binding, not the dict it points at, so the mapping itself has to be read-only.
     with pytest.raises(TypeError):
         cfg.sleeves["Equity"] = ("QQQ",)
 
@@ -269,11 +228,6 @@ def test_universe_is_a_tuple_not_a_mutable_sequence(cfg: Config) -> None:
     assert isinstance(cfg.cost_sensitivity_bps, tuple)
     for tickers in cfg.sleeves.values():
         assert isinstance(tickers, tuple)
-
-
-# --------------------------------------------------------------------------------------
-# 4. THE IMPORTANT ONES — the parser must fail loudly, never default
-# --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -297,6 +251,8 @@ def test_universe_is_a_tuple_not_a_mutable_sequence(cfg: Config) -> None:
     ],
     ids=lambda n: re.sub(r"\W+", "_", n).strip("_"),
 )
+
+
 def test_deleting_any_parameter_line_raises_rather_than_defaulting(
     tmp_path: Path, needle: str
 ) -> None:
@@ -321,6 +277,8 @@ def test_deleting_any_parameter_line_raises_rather_than_defaulting(
     ],
     ids=["lookback", "variant", "per_instrument_cap", "halflife", "cost", "configurations_tried"],
 )
+
+
 def test_corrupting_a_parameter_value_raises(
     tmp_path: Path, old: str, new: str, what: str
 ) -> None:
@@ -330,7 +288,6 @@ def test_corrupting_a_parameter_value_raises(
 
 @pytest.mark.parametrize("needle", ["Lookback:", "**Variant in use:**", "Per-instrument cap:"])
 def test_a_duplicated_parameter_line_is_ambiguous_and_raises(tmp_path: Path, needle: str) -> None:
-    """Two conflicting statements of a parameter must not be resolved by guessing."""
     with pytest.raises(ConfigParseError, match="ambiguous"):
         _load_damaged(tmp_path, _duplicate_line(PREREG_TEXT, needle))
 
@@ -360,7 +317,6 @@ def test_declared_count_disagreeing_with_a_correct_table_raises(tmp_path: Path) 
 
 
 def test_duplicated_ticker_raises_even_when_the_count_still_says_twelve(tmp_path: Path) -> None:
-    # SPY twice, EEM gone: still 12 rows, still reconciles with the sleeves, still wrong.
     damaged = _replace_once(PREREG_TEXT, "| Equity | SPY, EFA, EEM |", "| Equity | SPY, EFA, SPY |")
     with pytest.raises(ConfigParseError, match="duplicate ticker"):
         _load_damaged(tmp_path, damaged)
@@ -391,7 +347,6 @@ def test_cost_ladder_missing_the_headline_cost_raises(tmp_path: Path) -> None:
 
 
 def test_headline_cost_outside_the_ladder_raises(tmp_path: Path) -> None:
-    """Same guard from the other side: move the headline instead of the ladder."""
     damaged = _replace_once(
         PREREG_TEXT,
         "Cost assumption in backtest: **5 bps per side**",
@@ -432,6 +387,8 @@ def test_deleting_a_whole_section_raises(tmp_path: Path, section: int) -> None:
         ("truncated", PREREG_TEXT[: PREREG_TEXT.index("## 4.")]),
     ],
 )
+
+
 def test_an_unparseable_document_raises_instead_of_returning_a_partial_config(
     tmp_path: Path, name: str, text: str
 ) -> None:
@@ -452,7 +409,6 @@ def test_a_directory_in_place_of_the_document_raises(tmp_path: Path) -> None:
 
 
 def test_a_failed_parse_leaves_nothing_cached(tmp_path: Path) -> None:
-    """A damaged document must not poison, or be served from, the cache."""
     path = _write(tmp_path, _delete_line(PREREG_TEXT, "Lookback:"))
     with pytest.raises(ConfigParseError):
         load_config(path)

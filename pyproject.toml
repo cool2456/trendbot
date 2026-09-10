@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "trendbot"
 version = "1.0.0"
-description = "Diversified trend following v1.0 — implementation of PREREGISTRATION.md"
+description = "Diversified trend following bot"
 requires-python = ">=3.11"
 dependencies = [
     "pandas>=2.0",
@@ -17,7 +17,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Historical price history for the research path only. The test suite never imports these.
 research = ["yfinance>=0.2.40"]
 dev = ["pytest>=7.4"]
 

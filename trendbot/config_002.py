@@ -1,20 +1,3 @@
-"""Parse PREREG_002.md into a frozen configuration object.
-
-Same contract as :mod:`trendbot.config`, applied to a different document: the
-pre-registration is the sole source of truth for every parameter of experiment 002,
-this module *pulls* each one out of the text, and a missing or unparseable value is
-a fatal :class:`~trendbot.config.ConfigParseError` rather than a silent default.
-
-Experiment 001's parser is left untouched. The two documents describe different
-strategies with different sections, and making one parser serve both would mean
-loosening the patterns that make either of them strict.
-
-The primitive extractors are shared with :mod:`trendbot.config` deliberately: the
-"refuse to guess, refuse to default, refuse an ambiguous match" behaviour is the
-whole point of them, and re-implementing it here would be an opportunity to make it
-weaker.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -38,7 +21,6 @@ _PREREG_NAME = "PREREG_002.md"
 
 
 def find_preregistration_002(start: Path | None = None) -> Path:
-    """Locate PREREG_002.md by walking up from ``start`` (default: this file)."""
     here = (start or Path(__file__).resolve()).resolve()
     for parent in [here, *here.parents]:
         candidate = parent / _PREREG_NAME if parent.is_dir() else parent.parent / _PREREG_NAME
@@ -52,50 +34,39 @@ def find_preregistration_002(start: Path | None = None) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class Config002:
-    """Every frozen parameter of cross-sectional momentum, parsed from PREREG_002.md."""
-
-    # provenance
     source_path: Path
     source_sha256: str
     committed_on: str
     signed_by: str
     signed_date: str
 
-    # header - the cumulative trial counter
     configurations_tried: int
 
-    # section 2 - universe
     sleeves: Mapping[str, tuple[str, ...]]
     universe: tuple[str, ...]
     declared_universe_size: int
     universe_history_required_from: str
 
-    # section 3 - signal
     formation_days: int
     skip_days: int
     n_quantiles: int
     declared_quantile_size: int
     long_only: bool
 
-    # section 4 - risk scaling
     gross_exposure_cap: float
 
-    # section 5 - execution
     rebalance: str
     has_drift_band: bool
     cost_bps_per_side: float
     cost_sensitivity_bps: tuple[float, ...]
 
-    # section 6 - sample window
     sample_start: str
 
-    # section 8 - pre-committed decision rule
     support_min_sharpe: float
     support_min_sharpe_excess_over_buy_and_hold: float
     abandon_below_sharpe: float
     requires_quintile_monotonicity: bool
 
-    # section 9 - expectations of record
     expected_sharpe_low: float
     expected_sharpe_high: float
     bug_threshold_sharpe: float
@@ -142,7 +113,7 @@ class Config002:
                 f"headline cost {self.cost_bps_per_side} bps is absent from the sensitivity "
                 f"ladder {self.cost_sensitivity_bps}"
             )
-        pd.Timestamp(self.sample_start)  # raises if section 6's date is unparseable
+        pd.Timestamp(self.sample_start)
 
     @property
     def cost_rate_per_side(self) -> float:
@@ -176,7 +147,7 @@ def _parse_universe(text: str) -> tuple[dict[str, tuple[str, ...]], tuple[str, .
             continue
         sleeve, tickers = cells
         if sleeve.lower() == "sleeve" or set(sleeve) <= set("- :"):
-            continue  # header or separator row
+            continue
         symbols = tuple(t.strip() for t in tickers.split(",") if t.strip())
         if not symbols:
             continue
@@ -220,8 +191,6 @@ def _parse_text(text: str, source_path: Path) -> Config002:
         "the momentum formula",
     )
     skip_days, formation_days = int(formula.group(1)), int(formula.group(2))
-    # The prose restates the skip in words. Cross-checking it against the formula makes
-    # a document that contradicts itself a parse error rather than a coin flip.
     prose_skip = int(
         _require_unique(
             r"skipping the most recent month\*\*\s*\((\d+)\s+trading days\)",
@@ -234,9 +203,6 @@ def _parse_text(text: str, source_path: Path) -> Config002:
             f"section 3's formula skips {skip_days} days but its prose says {prose_skip}"
         )
 
-    # "Top quintile (highest ~8 of 41)" fixes both the number of buckets and how many
-    # names the top bucket is meant to hold. Both are pulled out; the second is what
-    # decides the bucket-size convention rather than leaving it to the implementer.
     quantile_word = _require_unique(
         r"-\s*\*\*Top (quintile|quartile|decile|tercile)\*\*", s3, "the quantile cut"
     ).group(1)
@@ -299,9 +265,6 @@ def _parse_text(text: str, source_path: Path) -> Config002:
             r"Net Sharpe is below\s*\*\*(\d+(?:\.\d+)?)\*\*", s8, "abandonment threshold"
         ).group(1)
     )
-    # Section 8's other two abandonment limbs carry no number and are therefore easy to
-    # parse only the first of. Their presence is asserted so that deleting either from
-    # the document is a parse error rather than a quiet loosening of the rule.
     _require_unique(
         r"It fails to beat equal-weight buy-and-hold at all", s8, "the buy-and-hold abandon clause"
     )
@@ -380,7 +343,6 @@ _CACHE: dict[Path, Config002] = {}
 
 
 def load_config_002(path: Path | str | None = None, *, use_cache: bool = True) -> Config002:
-    """Parse PREREG_002.md into a frozen :class:`Config002`."""
     resolved = Path(path).resolve() if path is not None else find_preregistration_002()
     if use_cache and resolved in _CACHE:
         return _CACHE[resolved]

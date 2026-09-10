@@ -1,20 +1,3 @@
-"""PREREG_004.md is the sole source of truth, and the parser refuses to guess.
-
-Two things are new relative to the three parsers before it, and both get their own
-tests here:
-
-* **Section 3 is a table**, not a scalar, and it is the largest degree of freedom in the
-  experiment. It is parsed as a table so that the mapping from a delist reason to a
-  return cannot be quietly changed one row at a time.
-* **Section 6 is a rule with no date in it.** The parser is asserted to carry no start
-  date at all, because a start date in the config would be a chosen window wearing a
-  rule's clothes.
-
-Section 8's thresholds are byte-identical to experiment 003's by design, and that is
-asserted against the 003 config object rather than against a list of numbers copied
-into this file.
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -45,11 +28,6 @@ def _parse(text: str, tmp_path: Path) -> Config004:
     path = tmp_path / "PREREG_004.md"
     path.write_text(text, encoding="utf-8")
     return load_config_004(path, use_cache=False)
-
-
-# --------------------------------------------------------------------------------------
-# what the document says
-# --------------------------------------------------------------------------------------
 
 
 def test_every_parameter_comes_out_of_the_document(cfg004):
@@ -99,14 +77,12 @@ def test_an_unrecognised_bucket_is_an_error_not_a_default(cfg004):
 
 
 def test_section_6_carries_a_rule_and_no_date(cfg004):
-    """A start date in the config would be a chosen window wearing a rule's clothes."""
     fields = {f.name for f in dataclasses.fields(cfg004)}
     assert not any("start" in f and "date" in f for f in fields), fields
     assert cfg004.start_rule_min_names == cfg004.universe_size
 
 
 def test_section_8s_thresholds_are_byte_identical_to_experiment_003(cfg004):
-    """Section 8 says so explicitly: "the data is the only variable"."""
     from trendbot.config_003 import load_config_003
 
     cfg003 = load_config_003()
@@ -120,17 +96,11 @@ def test_section_8s_thresholds_are_byte_identical_to_experiment_003(cfg004):
         "abandon_below_spread_t_stat",
     ):
         assert getattr(cfg004, field) == getattr(cfg003, field), field
-    # ...and so is the signal, so that the universe really is the only difference
     for field in ("formation_days", "skip_days", "n_quantiles", "cost_bps_per_side"):
         assert getattr(cfg004, field) == getattr(cfg003, field), field
 
 
 def test_the_alpha_benchmark_is_read_from_the_document_not_assumed(cfg004):
-    """Section 8 names the index; the parser captures it rather than hardcoding one.
-
-    Also keeps the ticker out of the source, which tests/test_repo_invariants.py bans
-    outside the section 2 parser - for the same reason it bans any inlined universe.
-    """
     assert cfg004.market_proxy_symbol == "SPY"
 
     from trendbot.equities import load_market_proxy
@@ -141,13 +111,11 @@ def test_the_alpha_benchmark_is_read_from_the_document_not_assumed(cfg004):
 
 
 def test_renaming_the_alpha_benchmark_moves_both_section_8_clauses(text, tmp_path):
-    """The support clause and the abandon clause must name the same index."""
     renamed = text.replace("Alpha to SPY", "Alpha to QQQ").replace(
         "alpha to SPY negative", "alpha to QQQ negative"
     )
     assert _parse(renamed, tmp_path).market_proxy_symbol == "QQQ"
 
-    # ...and a document naming two different indices in the two clauses is fatal
     half = text.replace("**Alpha to SPY is positive", "**Alpha to QQQ is positive")
     with pytest.raises(ConfigParseError, match="negative-alpha abandon clause"):
         _parse(half, tmp_path)
@@ -178,11 +146,6 @@ def test_the_config_is_frozen_and_holds_nothing_mutable(cfg004):
         assert isinstance(value, immutable), f"{field.name} holds a mutable {type(value).__name__}"
 
 
-# --------------------------------------------------------------------------------------
-# the parser refuses to guess
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "victim",
     [
@@ -196,6 +159,8 @@ def test_the_config_is_frozen_and_holds_nothing_mutable(cfg004):
         "Signed: **Pranav**   Date: **2026-08-19**",
     ],
 )
+
+
 def test_deleting_any_parameter_is_fatal_rather_than_defaulted(text, tmp_path, victim):
     assert victim in text, f"fixture is stale: {victim!r}"
     with pytest.raises(ConfigParseError):
@@ -221,7 +186,6 @@ def test_deleting_a_clause_that_carries_no_number_is_also_fatal(text, tmp_path):
 
 
 def test_removing_the_word_unadjusted_from_the_price_floor_is_fatal(text, tmp_path):
-    """The floor on an adjusted price would be a lookahead, so the word is load-bearing."""
     broken = text.replace(
         "- Unadjusted close on date t is at least **$5.00**.",
         "- Close on date t is at least **$5.00**.",
@@ -237,11 +201,6 @@ def test_an_ambiguous_parameter_is_fatal_rather_than_resolved(text, tmp_path):
     )
     with pytest.raises(ConfigParseError, match="ambiguous"):
         _parse(doubled, tmp_path)
-
-
-# --------------------------------------------------------------------------------------
-# a document that contradicts itself is fatal
-# --------------------------------------------------------------------------------------
 
 
 def test_a_start_rule_that_disagrees_with_the_universe_size_is_fatal(text, tmp_path):
@@ -266,18 +225,11 @@ def test_a_bankruptcy_treatment_other_than_total_loss_is_fatal(text, tmp_path):
 
 
 def test_a_headline_haircut_that_collapses_its_own_ladder_is_fatal(text, tmp_path):
-    """The ladder exists to show the size of the choice; three points, not two.
-
-    A headline equal to one of the alternatives leaves the mandatory sensitivity
-    reporting two distinct numbers where section 3 asks for three, which hides exactly
-    the degree of freedom it says must be visible.
-    """
     collapsed = text.replace("| Moved to OTC, or reason unknown/missing | **−30%** |",
                              "| Moved to OTC, or reason unknown/missing | **−100%** |")
     with pytest.raises(ConfigParseError, match="collapses"):
         _parse(collapsed, tmp_path)
 
-    # a headline distinct from both alternatives is fine, whatever its value
     moved = text.replace("| Moved to OTC, or reason unknown/missing | **−30%** |",
                          "| Moved to OTC, or reason unknown/missing | **−45%** |")
     assert _parse(moved, tmp_path).delisting.unknown_return == pytest.approx(-0.45)
@@ -301,11 +253,6 @@ def test_a_headline_cost_outside_its_own_ladder_is_fatal(text, tmp_path):
     broken = text.replace("Sensitivity at 0/5/10/20/40.", "Sensitivity at 0/5/15/20/40.")
     with pytest.raises(ConfigParseError, match="absent from the sensitivity"):
         _parse(broken, tmp_path)
-
-
-# --------------------------------------------------------------------------------------
-# the document itself is frozen
-# --------------------------------------------------------------------------------------
 
 
 def test_prereg_004_is_unmodified_relative_to_git_head():

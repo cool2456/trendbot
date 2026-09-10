@@ -1,20 +1,3 @@
-"""Parse PREREGISTRATION.md into a frozen configuration object.
-
-The pre-registration document is the sole source of truth for every strategy
-parameter. This module reads it directly rather than duplicating the numbers into
-Python, so that changing a parameter means editing a signed document and changing
-its content hash.
-
-Design rules enforced here:
-
-* No strategy parameter has a default. Every value is *pulled* out of the document
-  and a missing or unparseable value raises :class:`ConfigParseError`. A silent
-  fallback would defeat the entire point of pre-registering.
-* The parsed object is frozen. Nothing downstream may mutate a parameter.
-* The sha256 of the document is carried on the config so that any artefact produced
-  by a run can be tied back to the exact text that produced it.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -31,20 +14,14 @@ __all__ = [
     "find_preregistration",
 ]
 
-# Location of the document relative to the installed package (repo root).
 _PREREG_NAME = "PREREGISTRATION.md"
 
 
 class ConfigParseError(ValueError):
-    """Raised when the pre-registration cannot be parsed into a complete config.
-
-    This is deliberately fatal. If a parameter the strategy needs is absent from the
-    document, the correct behaviour is to stop, not to guess.
-    """
+    pass
 
 
 def find_preregistration(start: Path | None = None) -> Path:
-    """Locate PREREGISTRATION.md by walking up from ``start`` (default: this file)."""
     here = (start or Path(__file__).resolve()).resolve()
     for parent in [here, *here.parents]:
         candidate = parent / _PREREG_NAME if parent.is_dir() else parent.parent / _PREREG_NAME
@@ -54,11 +31,6 @@ def find_preregistration(start: Path | None = None) -> Path:
         f"{_PREREG_NAME} not found above {here}. The strategy cannot be configured "
         "without it; refusing to fall back to hardcoded parameters."
     )
-
-
-# --------------------------------------------------------------------------------------
-# primitive extractors
-# --------------------------------------------------------------------------------------
 
 
 def _require(pattern: str, text: str, what: str, flags: int = 0) -> re.Match[str]:
@@ -87,7 +59,6 @@ def _require_unique(pattern: str, text: str, what: str, flags: int = 0) -> re.Ma
 
 
 def _section(text: str, number: int) -> str:
-    """Return the body of markdown section ``## {number}. ...``."""
     match = re.search(
         rf"^##\s+{number}\.\s+.*?$(.*?)(?=^##\s+\d+\.|\Z)",
         text,
@@ -102,72 +73,47 @@ def _pct(raw: str) -> float:
     return float(raw) / 100.0
 
 
-# --------------------------------------------------------------------------------------
-# config object
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class Config:
-    """Every frozen parameter of diversified trend following v1.0.
-
-    Field names mirror the language of the document. Attribute access is the only
-    supported way to read a parameter; nothing in this package may inline a literal.
-    """
-
-    # provenance
     source_path: Path
     source_sha256: str
     version: str
     signed_by: str
     signed_date: str
 
-    # section 2 - universe
     sleeves: Mapping[str, tuple[str, ...]]
     universe: tuple[str, ...]
 
-    # section 3 - signal
     lookback_days: int
-    variant: str  # "long-only" or "long-short"
+    variant: str
 
-    # section 4 - risk scaling
     instrument_vol_target: float
     ewma_halflife_days: int
     portfolio_vol_target: float
     gross_exposure_cap: float
     per_instrument_cap: float
 
-    # section 5 - execution
     rebalance: str
     drift_band: float
     cost_bps_per_side: float
     cost_sensitivity_bps: tuple[float, ...]
 
-    # section 7 - protocol
     configurations_tried: int
 
-    # section 8 - pre-committed decision rule
     support_min_sharpe: float
     support_min_positive_instruments: int
     support_min_sharpe_excess_over_buy_and_hold: float
     abandon_below_sharpe: float
     abandon_if_not_beating_buy_and_hold: bool
 
-    # section 9 - expectations of record
     expected_sharpe_low: float
     expected_sharpe_high: float
     bug_threshold_sharpe: float
 
-    # derived, not a free parameter: the divisor in w_i = x_i / N is the fixed
-    # universe size stated in section 2, held constant even when instruments are
-    # inactive for want of history.
     n_universe: int = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "n_universe", len(self.universe))
-        # A frozen dataclass freezes the binding, not the object bound. A plain dict
-        # here would let a caller rewrite sleeve membership in place, which is
-        # precisely the kind of quiet edit this whole module exists to prevent.
         object.__setattr__(self, "sleeves", MappingProxyType(dict(self.sleeves)))
         self._validate()
 
@@ -203,7 +149,6 @@ class Config:
 
     @property
     def cost_rate_per_side(self) -> float:
-        """Cost per unit of one-way turnover, as a decimal fraction."""
         return self.cost_bps_per_side / 10_000.0
 
     def sleeve_of(self, ticker: str) -> str:
@@ -222,11 +167,6 @@ class Config:
         )
 
 
-# --------------------------------------------------------------------------------------
-# the parser
-# --------------------------------------------------------------------------------------
-
-
 def _parse_universe(text: str) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
     body = _section(text, 2)
     sleeves: dict[str, tuple[str, ...]] = {}
@@ -240,7 +180,7 @@ def _parse_universe(text: str) -> tuple[dict[str, tuple[str, ...]], tuple[str, .
             continue
         sleeve, tickers = cells
         if sleeve.lower() == "sleeve" or set(sleeve) <= set("- :"):
-            continue  # header or separator row
+            continue
         symbols = tuple(t.strip() for t in tickers.split(",") if t.strip())
         if not symbols:
             continue
@@ -346,10 +286,6 @@ def _parse_text(text: str, source_path: Path) -> Config:
     abandon = float(
         _require_unique(r"net Sharpe is below\s*(\d+(?:\.\d+)?)", s8, "abandonment threshold").group(1)
     )
-    # Section 8's abandonment rule has two limbs joined by "or". The second carries no
-    # number, so it is easy to parse only the first and silently apply half the rule.
-    # Its presence is asserted here so that deleting it from the document is a parse
-    # error rather than a quiet loosening of the pre-committed criterion.
     _require_unique(
         r"fails to beat\s*\n?\s*equal-weight buy-and-hold at all",
         s8,
@@ -401,7 +337,6 @@ _CACHE: dict[Path, Config] = {}
 
 
 def load_config(path: Path | str | None = None, *, use_cache: bool = True) -> Config:
-    """Parse the pre-registration document into a frozen :class:`Config`."""
     resolved = Path(path).resolve() if path is not None else find_preregistration()
     if use_cache and resolved in _CACHE:
         return _CACHE[resolved]

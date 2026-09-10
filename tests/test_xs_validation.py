@@ -1,11 +1,3 @@
-"""Experiment 002's diagnostics: the correlated null, the quintile gate, the verdict.
-
-The quintile study is not a diagnostic — PREREG_002.md section 8 abandons the
-strategy outright if the ordering is not monotonic — so it gets the same treatment as
-the signal itself: a hand-built fixture whose answer is known, plus an exact
-reconciliation against what the engine actually earns.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -35,17 +27,7 @@ def cfg002():
     return load_config_002()
 
 
-# --------------------------------------------------------------------------------------
-# the correlated null
-# --------------------------------------------------------------------------------------
-
-
 def test_common_factor_prices_hold_total_volatility_flat_across_instruments(cfg002):
-    """The point of the construction: betas differ, total vol does not.
-
-    If the betas moved total vol too, a cross-sectional rank would be sorting partly
-    on volatility and the test would not isolate the factor-loading failure mode.
-    """
     prices = common_factor_prices(cfg002.universe, seed=0, n_days=3000, annual_vol=0.16)
     vols = prices.close.pct_change().std() * np.sqrt(252)
     assert vols.min() > 0.14 and vols.max() < 0.18
@@ -75,12 +57,6 @@ def test_an_infeasible_factor_share_is_refused_not_clipped(cfg002):
 @pytest.mark.slow
 @pytest.mark.parametrize("correlated", [False, True])
 def test_the_rule_earns_nothing_on_either_null(cfg002, correlated):
-    """Section 7 step 1, both variants, measured gross of costs.
-
-    Gross, because the net figure on driftless data is expected to sit below zero by
-    the cost drag of a strategy that replaces most of its book monthly, and that is a
-    statement about costs rather than about whether the rule found anything.
-    """
     result = panel_noise_test(
         cfg002,
         label="test",
@@ -96,13 +72,6 @@ def test_the_rule_earns_nothing_on_either_null(cfg002, correlated):
 
 @pytest.mark.slow
 def test_on_correlated_noise_the_rule_is_a_factor_tilt_that_earns_nothing(cfg002):
-    """The two halves the correlated test exists to separate.
-
-    A Sharpe near zero on its own would not settle it: the rule could be a leveraged
-    factor bet measured in a period when the factor went nowhere. Beta says the tilt is
-    real; alpha says the tilt pays nothing. Variant (a) can show neither, because
-    independent walks have no factor to tilt onto.
-    """
     attribution = factor_attribution(
         cfg002, seeds=tuple(range(8)), n_days=2500, common_variance_share=0.5
     )
@@ -112,7 +81,6 @@ def test_on_correlated_noise_the_rule_is_a_factor_tilt_that_earns_nothing(cfg002
 
 
 def test_factor_attribution_finds_no_tilt_where_there_is_no_factor(cfg002):
-    """Negative control on the attribution itself: betas collapse without a factor."""
     attribution = factor_attribution(
         cfg002, seeds=(0, 1, 2), n_days=1500, common_variance_share=0.0
     )
@@ -123,17 +91,7 @@ def test_factor_attribution_finds_no_tilt_where_there_is_no_factor(cfg002):
     assert abs(attribution.mean_alpha_annualised) < 0.02, attribution
 
 
-# --------------------------------------------------------------------------------------
-# the quintile gate
-# --------------------------------------------------------------------------------------
-
-
 def _hand_panel() -> PriceData:
-    """Ten names on a calendar with several month boundaries, prices set by hand.
-
-    Every name's price is a step function that changes only at month starts, so the
-    forward return of a quintile over a month is exactly the step it took.
-    """
     index = pd.bdate_range("2020-01-01", periods=130)
     frame = pd.DataFrame(100.0, index=index, columns=[f"N{i}" for i in range(10)])
     return PriceData(
@@ -142,29 +100,20 @@ def _hand_panel() -> PriceData:
 
 
 def test_quintile_study_reads_the_forward_return_off_consecutive_rebalances(cfg002):
-    """Hand-built: two buckets, a known sort, a known forward move.
-
-    N0..N4 are the winners over the formation window and each doubles over the next
-    month; N5..N9 are the losers and each halves. So Q1's forward return must be
-    exactly +100% and Q2's exactly -50%, with nothing in between to average away.
-    """
     from dataclasses import replace
 
     index = pd.bdate_range("2020-01-01", periods=90)
     names = [f"N{i}" for i in range(10)]
     close = pd.DataFrame(100.0, index=index, columns=names)
 
-    # month starts inside this calendar
     months = index.to_period("M")
     first_of_month = index[np.r_[True, months[1:] != months[:-1]]]
-    reb_a, reb_b = first_of_month[1], first_of_month[2]  # the first is dropped by the engine
+    reb_a, reb_b = first_of_month[1], first_of_month[2]
 
     winners, losers = names[:5], names[5:]
-    # formation: winners are up over the window ending one bar before reb_a
     close.loc[: index[index.get_loc(reb_a) - 1], winners] = 200.0
     close.loc[: index[index.get_loc(reb_a) - 1], losers] = 50.0
-    close.iloc[0] = 100.0  # the base of the ratio, identical for everyone
-    # forward: winners double and losers halve between reb_a and reb_b
+    close.iloc[0] = 100.0
     close.loc[reb_a:, winners] = 300.0
     close.loc[reb_a:, losers] = 40.0
     close.loc[reb_b:, winners] = 600.0
@@ -193,14 +142,6 @@ def test_quintile_study_reads_the_forward_return_off_consecutive_rebalances(cfg0
 
 
 def test_q1_is_exactly_what_the_engine_earns_open_to_open(cfg002):
-    """The decisive consistency check between section 3 and section 8.
-
-    Section 3's traded portfolio *is* Q1, so at zero cost the engine's equity measured
-    open-of-rebalance to open-of-next-rebalance must equal Q1's forward return series
-    exactly, not approximately. If these two ever diverge, one of them is measuring a
-    different portfolio and the monotonicity gate stops being a statement about the
-    strategy that was run.
-    """
     prices = synthetic_prices(cfg002.universe, seed=11, n_days=1500)
     result = run_panel_backtest(
         prices,
@@ -221,7 +162,6 @@ def test_q1_is_exactly_what_the_engine_earns_open_to_open(cfg002):
 
 
 def test_the_quintile_study_sorts_on_information_available_before_the_trade(cfg002):
-    """The sort must use the previous close, i.e. what the execution lag allows."""
     prices = synthetic_prices(cfg002.universe, seed=12, n_days=900)
     study = quintile_study(prices, cfg002)
     close = prices.close[list(cfg002.universe)]
@@ -266,11 +206,6 @@ def test_monotonicity_and_inversion_counting(cfg002):
     assert study.spread_positive, "a single inversion low down still leaves Q1 above Q5"
 
 
-# --------------------------------------------------------------------------------------
-# section 8, applied
-# --------------------------------------------------------------------------------------
-
-
 def _decide(cfg002, sharpe, benchmark, monotonic, spread_positive=True) -> Decision002:
     return evaluate_decision_rule_002(
         cfg002,
@@ -283,14 +218,12 @@ def _decide(cfg002, sharpe, benchmark, monotonic, spread_positive=True) -> Decis
 
 def test_supported_requires_all_three_clauses(cfg002):
     assert _decide(cfg002, 0.70, 0.50, True).verdict == "SUPPORTED"
-    # each clause removed in turn
-    assert _decide(cfg002, 0.40, 0.10, True).verdict != "SUPPORTED"  # not strictly above 0.40
-    assert _decide(cfg002, 0.70, 0.60, True).verdict == "INCONCLUSIVE - do not trade"  # margin 0.10
-    assert _decide(cfg002, 0.70, 0.50, False).verdict == "ABANDON"  # monotonicity
+    assert _decide(cfg002, 0.40, 0.10, True).verdict != "SUPPORTED"
+    assert _decide(cfg002, 0.70, 0.60, True).verdict == "INCONCLUSIVE - do not trade"
+    assert _decide(cfg002, 0.70, 0.50, False).verdict == "ABANDON"
 
 
 def test_non_monotonic_is_sufficient_to_abandon_however_good_the_sharpe(cfg002):
-    """Section 8's own emphasis: the monotonicity test is the important one."""
     assert _decide(cfg002, 2.00, 0.10, False).verdict == "ABANDON"
     assert _decide(cfg002, 2.00, 0.10, True).verdict == "SUPPORTED"
 
@@ -307,12 +240,12 @@ def test_a_positive_spread_does_not_rescue_a_broken_ordering(cfg002):
 
 def test_failing_to_beat_the_benchmark_at_all_abandons(cfg002):
     assert _decide(cfg002, 0.46, 0.49, True).verdict == "ABANDON"
-    assert _decide(cfg002, 0.49, 0.49, True).verdict == "ABANDON"  # "exceeds" is strict
+    assert _decide(cfg002, 0.49, 0.49, True).verdict == "ABANDON"
 
 
 def test_a_sharpe_below_the_floor_abandons(cfg002):
     assert _decide(cfg002, 0.14, 0.05, True).verdict == "ABANDON"
-    assert _decide(cfg002, 0.15, 0.05, True).verdict == "INCONCLUSIVE - do not trade"  # "below" is strict
+    assert _decide(cfg002, 0.15, 0.05, True).verdict == "INCONCLUSIVE - do not trade"
 
 
 def test_the_comparators_follow_the_documents_own_words(cfg002):
@@ -320,11 +253,6 @@ def test_the_comparators_follow_the_documents_own_words(cfg002):
     assert exactly_the_margin.beats_benchmark_by_margin, "'at least 0.15' is inclusive"
     assert _decide(cfg002, 0.4000001, 0.1, True).exceeds_min_sharpe
     assert not _decide(cfg002, 0.40, 0.1, True).exceeds_min_sharpe, "'exceeds 0.40' is strict"
-
-
-# --------------------------------------------------------------------------------------
-# universe verification and worst months
-# --------------------------------------------------------------------------------------
 
 
 def test_universe_verification_flags_a_ticker_that_starts_too_late(cfg002):

@@ -1,24 +1,3 @@
-"""Static enforcement of the hard invariants and the "Do not" list in BUILD_PROMPT.md.
-
-Everything here inspects the source tree rather than running it, because these are
-properties of the repository, not of a single execution. Several of the tests police
-files that other parts of the build create (``trendbot/brokers/alpaca.py``,
-``trendbot/runner.py``, the rest of ``tests/``); those skip cleanly while the file is
-absent and start biting the moment it appears.
-
-Covered here:
-
-* invariant 4 — paper only, no live Alpaca endpoint, ``paper=True`` hardcoded;
-* invariant 6 — the test suite makes no network call and imports no network client;
-* invariant 1's static half — no negative shift anywhere in the package;
-* "Do not use ``try/except: pass`` anywhere in the execution path";
-* "Do not edit PREREGISTRATION.md" — checked against git HEAD;
-* "Do not tune any parameter" — no strategy number is hardcoded in the modules that
-  would be tempted to hold one, and the universe is not inlined outside the parser;
-* configuration and result objects are frozen, so no parameter can be mutated after
-  it is parsed.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -74,7 +53,7 @@ def _python_files(*roots: Path) -> list[Path]:
 def _parse(path: Path) -> ast.Module:
     try:
         return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except SyntaxError as exc:  # a half-written module must not slip past the sweep
+    except SyntaxError as exc:
         pytest.fail(f"{path.relative_to(REPO_ROOT)} does not parse: {exc}")
 
 
@@ -83,7 +62,6 @@ def _rel(path: Path) -> str:
 
 
 def _docstring_nodes(tree: ast.Module) -> set[int]:
-    """``id()`` of every Constant node that is a module/class/function docstring."""
     ids: set[int] = set()
     for node in ast.walk(tree):
         if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -100,7 +78,6 @@ def _docstring_nodes(tree: ast.Module) -> set[int]:
 
 
 def _numeric_literals(tree: ast.AST) -> list[tuple[float, int]]:
-    """Numeric constants, skipping anything inside a slice (``xs[:5]`` is not a parameter)."""
     slice_nodes: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript):
@@ -119,16 +96,11 @@ def _numeric_literals(tree: ast.AST) -> list[tuple[float, int]]:
     return out
 
 
-# --------------------------------------------------------------------------------------
-# invariant 4 — paper only
-# --------------------------------------------------------------------------------------
-
-_ALPACA_HOST = "api." + "alpaca.markets"  # split so this file is not itself a false hit
+_ALPACA_HOST = "api." + "alpaca.markets"
 _PAPER_HOST = "paper-" + _ALPACA_HOST
 
 
 def _live_endpoint_hits(text: str) -> list[int]:
-    """Offsets of ``api.alpaca.markets`` that are NOT prefixed with ``paper-``."""
     hits = []
     for match in re.finditer(re.escape(_ALPACA_HOST), text):
         start = match.start()
@@ -189,7 +161,6 @@ def test_alpaca_adapter_hardcodes_paper_true():
 
 
 def test_no_live_alpaca_endpoint_anywhere_in_the_repository():
-    """Invariant 4 applies to the whole repo, not just the adapter."""
     offenders: list[str] = []
     for path in sorted(REPO_ROOT.rglob("*")):
         if not path.is_file() or path.suffix not in {".py", ".md", ".toml", ".cfg", ".ini", ".json"}:
@@ -216,10 +187,6 @@ def test_no_module_sets_paper_false():
                 offenders.append(f"{_rel(path)}:{getattr(node.value, 'lineno', '?')}")
     assert not offenders, f"paper=False appears in: {offenders}"
 
-
-# --------------------------------------------------------------------------------------
-# invariant 6 — offline tests
-# --------------------------------------------------------------------------------------
 
 _FORBIDDEN_IMPORT_ROOTS = frozenset({"requests", "yfinance", "socket", "urllib3", "httpx", "aiohttp"})
 _FORBIDDEN_SUBMODULES = frozenset({"urllib.request", "urllib.error", "http.client"})
@@ -283,11 +250,6 @@ def test_test_suite_never_calls_a_network_data_loader():
     )
 
 
-# --------------------------------------------------------------------------------------
-# "Do not use try/except: pass anywhere in the execution path"
-# --------------------------------------------------------------------------------------
-
-
 def _is_noop(statement: ast.stmt) -> bool:
     if isinstance(statement, ast.Pass):
         return True
@@ -315,13 +277,7 @@ def test_no_exception_is_silently_swallowed():
     )
 
 
-# --------------------------------------------------------------------------------------
-# invariant 1's static half — no negative shift in the package
-# --------------------------------------------------------------------------------------
-
-
 def test_no_negative_shift_in_the_package():
-    """A ``.shift(-n)`` outside the tests is a lookahead by construction."""
     offenders: list[str] = []
     for path in _python_files(PACKAGE_DIR, SCRIPTS_DIR):
         for node in ast.walk(_parse(path)):
@@ -340,11 +296,6 @@ def test_no_negative_shift_in_the_package():
         "negative shift in the execution path — hard invariant 1 says information "
         "only ever moves forward:\n  " + "\n  ".join(offenders)
     )
-
-
-# --------------------------------------------------------------------------------------
-# "Do not edit PREREGISTRATION.md"
-# --------------------------------------------------------------------------------------
 
 
 def test_preregistration_is_unmodified_relative_to_git_head():
@@ -375,7 +326,6 @@ def test_preregistration_is_unmodified_relative_to_git_head():
 
 
 def test_config_hash_matches_the_document_on_disk():
-    """The config carries the sha256 of the text it was actually parsed from."""
     import hashlib
 
     cfg = load_config()
@@ -384,17 +334,7 @@ def test_config_hash_matches_the_document_on_disk():
     assert cfg.source_path == REPO_ROOT / "PREREGISTRATION.md"
 
 
-# --------------------------------------------------------------------------------------
-# "Do not tune any parameter" — no strategy number inlined in the strategy modules
-# --------------------------------------------------------------------------------------
-
-
 def test_signal_module_contains_no_numeric_literal_but_zero_one_and_tolerances():
-    """The lookback must arrive as an argument, never as a 252 in the source.
-
-    Anything other than 0, 1 or a small tolerance in trendbot/signal.py is a
-    strategy number that has escaped PREREGISTRATION.md.
-    """
     bad = [
         (value, line)
         for value, line in _numeric_literals(_parse(SIGNAL_PATH))
@@ -408,7 +348,6 @@ def test_signal_module_contains_no_numeric_literal_but_zero_one_and_tolerances()
 
 
 def test_sizing_uses_252_only_to_annualise():
-    """``sqrt(252)`` is legitimate; a 252 used as a lookback is not."""
     tree = _parse(SIZING_PATH)
 
     annualisation_names = {
@@ -431,7 +370,6 @@ def test_sizing_uses_252_only_to_annualise():
         f"at line(s) {stray}. If that is the lookback it must come from Config."
     )
 
-    # ...and the constant itself is only ever used to annualise: sqrt(x) or a product.
     parent: dict[int, ast.AST] = {}
     for node in ast.walk(tree):
         for child in ast.iter_child_nodes(node):
@@ -469,7 +407,6 @@ def test_no_pre_registered_parameter_is_hardcoded_in_signal_or_sizing():
         cfg.cost_bps_per_side: "cost_bps_per_side",
         cfg.cost_rate_per_side: "cost_rate_per_side",
     }
-    # 252 in sizing.py is the annualisation factor, covered precisely by the test above.
     exempt = {SIZING_PATH: {float(cfg.lookback_days)}}
 
     offenders: list[str] = []
@@ -486,11 +423,6 @@ def test_no_pre_registered_parameter_is_hardcoded_in_signal_or_sizing():
 
 
 def test_universe_tickers_are_not_inlined_outside_the_config_parser():
-    """Section 2's universe lives in PREREGISTRATION.md; only the parser may name it.
-
-    Docstrings are exempt — prose that mentions SPY's 1993 inception is documentation,
-    not a hardcoded universe.
-    """
     cfg = load_config()
     patterns = {ticker: re.compile(rf"\b{re.escape(ticker)}\b") for ticker in cfg.universe}
 
@@ -514,11 +446,6 @@ def test_universe_tickers_are_not_inlined_outside_the_config_parser():
     )
 
 
-# --------------------------------------------------------------------------------------
-# configuration and result objects are immutable
-# --------------------------------------------------------------------------------------
-
-
 def _is_dataclass_decorator(node: ast.expr) -> bool:
     target = node.func if isinstance(node, ast.Call) else node
     if isinstance(target, ast.Name):
@@ -540,12 +467,6 @@ def _declares_frozen(decorators: list[ast.expr]) -> bool:
 
 
 def _mutates_own_attributes(node: ast.ClassDef) -> bool:
-    """True when a method of the class assigns to ``self.<attr>``.
-
-    Such a class is stateful by construction and could not be frozen even in
-    principle; a value object that never rebinds its own fields could be, and
-    therefore must be.
-    """
     for member in node.body:
         if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -578,12 +499,6 @@ def _package_dataclasses() -> list[tuple[Path, ast.ClassDef]]:
 
 
 def test_public_value_dataclasses_are_frozen():
-    """A parsed parameter or a recorded result must not be mutable after the fact.
-
-    The only exemption is structural rather than declarative: a dataclass that
-    rebinds its own attributes is runtime state and cannot be frozen. Everything
-    else in this package is a config or a result and has to say so.
-    """
     offenders: list[str] = []
     for path, node in _package_dataclasses():
         if node.name.startswith("_") or _mutates_own_attributes(node):
@@ -600,12 +515,6 @@ def test_public_value_dataclasses_are_frozen():
 
 
 def test_every_dataclass_returned_by_the_package_is_frozen():
-    """No exemption here: anything a function hands back is a result.
-
-    Complements the test above, which lets self-mutating runtime state opt out.
-    A type that appears in a return annotation is being published as a result and
-    must be immutable however it is implemented.
-    """
     dataclasses_by_name = {node.name: (path, node) for path, node in _package_dataclasses()}
 
     returned: set[str] = set()
@@ -651,11 +560,6 @@ def _deeply_immutable(value: object) -> bool:
 
 
 def test_frozen_config_holds_no_mutable_parameter():
-    """`frozen=True` is not immutability if a field holds a dict.
-
-    Uses an uncached parse so that this test cannot itself corrupt the shared
-    session config — which is exactly the accident a mutable field invites.
-    """
     import dataclasses
 
     cfg = load_config(use_cache=False)

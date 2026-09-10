@@ -1,21 +1,3 @@
-"""The two strategies, expressed in the generalised panel protocol.
-
-Both are ``dict[str, DataFrame] -> DataFrame`` of target weights, and both are pure
-functions of the panel: nothing here knows what the engine is holding, and nothing
-here lags its own output.
-
-:class:`TimeSeriesTrend` is experiment 001 re-expressed, not re-implemented. It calls
-:func:`trendbot.signal.trend_signal` and :func:`trendbot.sizing.target_weights` - the
-same objects the original engine calls - once per bar instead of once per rebalance,
-which is the whole of the change. ``tests/test_experiment_001_regression.py`` asserts
-the resulting equity curve is the original one.
-
-:class:`CrossSectionalMomentum` is experiment 002, and is the reason the protocol had
-to widen: its weight for instrument *i* on date *t* is a function of where *i* ranks
-against every other instrument on that date, which no per-instrument signature can
-express.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -42,13 +24,6 @@ __all__ = [
 
 
 def _covariance_blocks(cov: pd.DataFrame, dates: pd.Index, universe: list[str]):
-    """Reshape a stacked EWMA covariance frame into one (n_dates, n, n) array.
-
-    ``DataFrame.ewm().cov()`` returns one square block per date, stacked in date order
-    with the inner index in column order. That layout is asserted rather than assumed,
-    because silently transposing a covariance matrix would change every weight without
-    changing any shape.
-    """
     n_dates, n_assets = len(dates), len(universe)
     if len(cov) != n_dates * n_assets:
         raise ValueError(
@@ -66,14 +41,6 @@ def _covariance_blocks(cov: pd.DataFrame, dates: pd.Index, universe: list[str]):
 
 @dataclass(frozen=True, slots=True)
 class TimeSeriesTrend:
-    """Experiment 001's rule, as a panel strategy.
-
-    Section 4's sizing pipeline - vol scaling, ``k``, the per-instrument cap, the
-    gross cap - is already a pure function of the signal and the vol estimate on one
-    date, so it lifts into this protocol unchanged. The drift band is not, and stays
-    in the engine where experiment 001 put it.
-    """
-
     cfg: Config
     covariance: CovarianceMethod = "full"
 
@@ -123,15 +90,6 @@ class TimeSeriesTrend:
 
 @dataclass(frozen=True, slots=True)
 class CrossSectionalMomentum:
-    """Experiment 002's rule, as a panel strategy.
-
-    PREREG_002.md sections 3 and 4 in full: rank on ``P(t-skip)/P(t-formation) - 1``,
-    hold the top bucket at ``1/n_selected`` each, hold nothing else. There is no vol
-    scaling to apply (section 4 removes it) and no cap that can bind, because equal
-    weights over the top bucket sum to exactly the gross exposure of 1.0 that section
-    4 states.
-    """
-
     cfg: Config002
 
     @property
@@ -142,7 +100,6 @@ class CrossSectionalMomentum:
         )
 
     def momentum(self, panel: Panel) -> pd.DataFrame:
-        """The raw ranking variable, exposed for the section 8 quintile study."""
         validate_panel(panel, require=("close",))
         universe = list(self.cfg.universe)
         close = panel_field(panel, "close")
@@ -159,25 +116,6 @@ class CrossSectionalMomentum:
 
 @dataclass(frozen=True, slots=True)
 class EquityCrossSectionalMomentum:
-    """Experiment 003's rule, as a panel strategy.
-
-    Structurally identical to :class:`CrossSectionalMomentum` - PREREG_003.md section 3
-    keeps 002's formula unchanged on purpose, "so that the universe is the only
-    variable" - and differs in exactly three places, all of them parameters rather than
-    logic:
-
-    * the universe is resolved from a dated index snapshot rather than listed in the
-      document, so it arrives as an argument instead of off the config;
-    * the sort is into ten buckets rather than five;
-    * the bucket-size convention is ``"even"`` rather than 002's ``"floor"``. Section 3
-      names no bucket size, and section 8's gate is the D1-D10 spread, so the two ends
-      of the sort are kept the same size. See :mod:`trendbot.xsmom` for the full
-      argument and the sensitivity that is reported alongside the headline.
-
-    Because the rule is the same object with different arguments, a disagreement
-    between 002's and 003's implementations is impossible rather than merely unlikely.
-    """
-
     cfg: Config003
     universe: tuple[str, ...]
     bucket_method: BucketMethod = "even"
@@ -191,7 +129,6 @@ class EquityCrossSectionalMomentum:
         )
 
     def momentum(self, panel: Panel) -> pd.DataFrame:
-        """The raw ranking variable, exposed for the section 8 decile study."""
         validate_panel(panel, require=("close",))
         universe = list(self.universe)
         close = panel_field(panel, "close")
@@ -210,31 +147,8 @@ class EquityCrossSectionalMomentum:
 
 @dataclass(frozen=True, slots=True)
 class PointInTimeMomentum:
-    """Experiment 004's rule: the same signal over a universe that changes every month.
-
-    The formula, the decile cut, the weighting and the schedule are byte-identical to
-    experiment 003 - PREREG_004.md section 1 says so explicitly, "so that the data is
-    the only variable". The single difference is that the set of names eligible to be
-    ranked is not a constant tuple but a per-date membership matrix computed by
-    :func:`trendbot.pit_universe.build_pit_universe`.
-
-    **Which bar the universe is evaluated on.** Section 2 says "at each monthly
-    rebalance date t", and section 5 says the fill is at the open of the bar after the
-    signal. Those two can only be made consistent one way: the universe rule and the
-    momentum signal are both evaluated on the *decision bar* - the close before the
-    rebalance - and the trade happens at the next open. Evaluating the rule on the
-    rebalance bar's own close while filling at that bar's open would require knowing
-    the close before the open, which is the lookahead the build order forbids. So
-    ``membership`` is indexed by decision bar, and the engine's single execution shift
-    carries it to the rebalance.
-
-    **Names not in the universe on a date are excluded from that date's ranking**, not
-    assigned a momentum of zero - the same distinction sections 2 and 3 of the previous
-    two experiments turned on, applied here to a set that moves.
-    """
-
     cfg: Config004
-    membership: pd.DataFrame  # decision bar x permaticker-as-string, boolean
+    membership: pd.DataFrame
     bucket_method: BucketMethod = "even"
 
     @property
@@ -246,12 +160,6 @@ class PointInTimeMomentum:
         )
 
     def eligible_momentum(self, panel: Panel) -> pd.DataFrame:
-        """Momentum, masked to the point-in-time universe on each decision bar.
-
-        NaN means "not ranked on this date", which covers both "no momentum yet" and
-        "not in the universe today". Both are exclusions from the sort, which is what
-        section 2 and section 4 each ask for.
-        """
         validate_panel(panel, require=("close",))
         close = panel_field(panel, "close")
         momentum = cross_sectional_momentum(
@@ -269,32 +177,6 @@ class PointInTimeMomentum:
 
 @dataclass(frozen=True, slots=True)
 class CurrencyCrossSectionalMomentum:
-    """Experiment 005's rule: the same signal over the H.10 currency universe.
-
-    PREREG_005.md section 1 says the signal is "byte-identical to experiments 002, 003
-    and 004. Only the universe changes." So this is
-    :class:`EquityCrossSectionalMomentum` with a different config type and a different
-    universe, and it delegates to the same :func:`~trendbot.xsmom.cross_sectional_momentum`
-    and :func:`~trendbot.xsmom.top_quantile_weights` that produced every previous
-    experiment's positions. A disagreement between the four implementations is
-    impossible rather than merely unlikely.
-
-    **What "P" is here.** The panel's prices are exchange rates normalised to the USD
-    value of one unit of the foreign currency - :mod:`trendbot.fx` guarantees that, and
-    gates on it before this class ever sees them. So ``P(t-21)/P(t-252) - 1`` is the
-    twelve-month-minus-one-month appreciation of the currency against the dollar, which
-    is section 4's signal. If the normalisation were wrong the ranking would be
-    backwards here and nothing in this class could tell.
-
-    **Bucket convention.** ``"even"``, for the reason :mod:`trendbot.xsmom` documents and
-    experiment 003 established: PREREG_005.md section 4 names no bucket size, and
-    section 8's gate is the Q1-Q5 spread, so the two ends of the sort are kept the same
-    size and the gated spread compares like with like. At 22 currencies ``"floor"``
-    would make Q5 half again as wide as Q1, diluting the extreme losers and narrowing
-    the very quantity section 8 tests. The alternative is reported as a sensitivity
-    rather than left unexamined.
-    """
-
     cfg: Config005
     universe: tuple[str, ...]
     bucket_method: BucketMethod = "even"
@@ -308,7 +190,6 @@ class CurrencyCrossSectionalMomentum:
         )
 
     def momentum(self, panel: Panel) -> pd.DataFrame:
-        """The raw ranking variable, exposed for the section 8 quintile study."""
         validate_panel(panel, require=("close",))
         universe = list(self.universe)
         close = panel_field(panel, "close")

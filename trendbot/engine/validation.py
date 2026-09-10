@@ -1,34 +1,3 @@
-"""Diagnostics whose purpose is to argue that the backtest result is not real.
-
-Four tests, in the order PREREGISTRATION.md section 7 requires:
-
-1. :func:`noise_test` - the strategy on synthetic random walks. A materially
-   positive Sharpe here means the engine has a bug, not that the strategy works.
-2. :func:`in_sample_out_of_sample` - a 50/50 time split. Nothing is fitted, so both
-   halves are out-of-sample by construction and a large asymmetry indicates a data
-   problem rather than decay.
-3. :func:`walk_forward` - rolling windows with no re-optimisation.
-4. :func:`deflated_sharpe_ratio` - Bailey & Lopez de Prado's correction for the
-   number of configurations tried.
-
-On the walk-forward window lengths
-----------------------------------
-Section 7 says "rolling windows" and never gives a window length or step. These are
-not strategy parameters - section 6's frozen list does not contain them, and nothing
-is fitted in a window, so changing them cannot change a position. They are reporting
-choices, exposed as arguments and disclosed in FINDINGS.md rather than silently
-chosen.
-
-On the deflated Sharpe at N=1
-------------------------------
-The Bailey & Lopez de Prado expected-maximum-Sharpe term is degenerate at exactly
-one trial: it contains ``Z^-1(1 - 1/N)``, which is ``Z^-1(0) = -inf`` when ``N=1``.
-The interpretation is unambiguous even though the formula is not - with a single
-configuration there is no selection bias to deflate - so the benchmark collapses to
-``SR* = 0`` and the deflated Sharpe becomes the probabilistic Sharpe ratio against
-zero. That is implemented explicitly rather than papered over.
-"""
-
 from __future__ import annotations
 
 import math
@@ -67,11 +36,6 @@ __all__ = [
 EULER_MASCHERONI = 0.5772156649015329
 
 
-# --------------------------------------------------------------------------------------
-# synthetic data
-# --------------------------------------------------------------------------------------
-
-
 def synthetic_prices(
     tickers: Sequence[str],
     *,
@@ -82,17 +46,6 @@ def synthetic_prices(
     overnight_gap_fraction: float = 0.4,
     start: str = "1998-01-02",
 ) -> PriceData:
-    """Independent driftless geometric random walks - the null the strategy must fail on.
-
-    Opens are generated as the previous close plus an independent overnight gap, so
-    that an engine which accidentally fills at the same bar's close rather than the
-    next bar's open shows up as an implausible result rather than passing quietly.
-
-    ``annual_drift=0`` is the case section 7 step 1 cares about. A non-zero drift is
-    available because a long-only strategy on drifting data *should* make money, and
-    a test that it does is a useful counterpart to the test that it does not on
-    driftless data.
-    """
     if n_days < 2:
         raise ValueError("need at least 2 days")
     rng = np.random.default_rng(seed)
@@ -111,11 +64,6 @@ def synthetic_prices(
     return PriceData(
         open=open_, close=close, source=f"synthetic(seed={seed})", adjusted=True, fetched_at=""
     )
-
-
-# --------------------------------------------------------------------------------------
-# 1. noise test
-# --------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,7 +87,6 @@ class NoiseTestResult:
         return float(np.mean(self.buy_and_hold_sharpes))
 
     def passes(self, tolerance: float = 0.2) -> bool:
-        """True when neither the strategy nor buy-and-hold earns anything on noise."""
         return abs(self.mean_sharpe) <= tolerance and abs(self.mean_buy_and_hold_sharpe) <= tolerance
 
     def __str__(self) -> str:
@@ -158,8 +105,7 @@ def noise_test(
     annual_drift: float = 0.0,
     annual_vol: float = 0.16,
 ) -> NoiseTestResult:
-    """Section 7 step 1. Run the real engine on synthetic random walks."""
-    from .backtest import buy_and_hold, run_backtest  # local import: avoids a cycle
+    from .backtest import buy_and_hold, run_backtest
 
     strat, bh = [], []
     for seed in seeds:
@@ -175,11 +121,6 @@ def noise_test(
         n_days=n_days,
         annual_drift=annual_drift,
     )
-
-
-# --------------------------------------------------------------------------------------
-# 2. in-sample / out-of-sample
-# --------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,11 +145,6 @@ class SplitResult:
 
 
 def in_sample_out_of_sample(returns: pd.Series) -> SplitResult:
-    """Section 7 step 3. A 50/50 split by observation count.
-
-    The strategy fits nothing, so neither half is privileged; this measures
-    stability, not generalisation.
-    """
     returns = returns.dropna()
     if len(returns) < 4:
         raise ValueError("need at least 4 observations to split")
@@ -221,11 +157,6 @@ def in_sample_out_of_sample(returns: pd.Series) -> SplitResult:
         first_half_n=len(first),
         second_half_n=len(second),
     )
-
-
-# --------------------------------------------------------------------------------------
-# 3. walk-forward
-# --------------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,12 +176,6 @@ class WalkForwardResult:
 
     @property
     def gap(self) -> float:
-        """Mean train Sharpe minus mean live Sharpe.
-
-        With nothing fitted this should be near zero. A large positive gap would
-        mean the in-window periods are systematically different from the periods
-        that follow them, which is a statement about the data, not about overfitting.
-        """
         return self.mean_train_sharpe - self.mean_test_sharpe
 
     @property
@@ -274,12 +199,6 @@ def walk_forward(
     step_years: float = 1.0,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> WalkForwardResult:
-    """Section 7 step 4. Rolling windows, nothing re-optimised.
-
-    There is no fitting step, so "train" simply means the window and "live" means
-    the period immediately after it. The comparison is still worth making: it asks
-    whether a period's result tells you anything about the period that follows.
-    """
     returns = returns.dropna()
     train_n = int(round(train_years * periods_per_year))
     test_n = int(round(test_years * periods_per_year))
@@ -317,11 +236,6 @@ def walk_forward(
     )
 
 
-# --------------------------------------------------------------------------------------
-# 4. deflated Sharpe
-# --------------------------------------------------------------------------------------
-
-
 def probabilistic_sharpe_ratio(
     observed_sharpe: float,
     n_observations: int,
@@ -329,11 +243,6 @@ def probabilistic_sharpe_ratio(
     kurtosis: float,
     benchmark_sharpe: float = 0.0,
 ) -> float:
-    """Bailey & Lopez de Prado's PSR: P(true Sharpe > benchmark).
-
-    All Sharpe arguments are **per-period**, not annualised, and ``kurtosis`` is the
-    raw fourth moment ratio (3.0 for a normal), not excess kurtosis.
-    """
     if n_observations < 2:
         raise ValueError("need at least 2 observations")
     denominator = 1.0 - skewness * observed_sharpe + 0.25 * (kurtosis - 1.0) * observed_sharpe**2
@@ -347,16 +256,6 @@ def probabilistic_sharpe_ratio(
 
 
 def expected_max_sharpe(n_configurations: int, sharpe_variance: float) -> float:
-    """``E[max SR]`` across ``n_configurations`` independent trials under the null.
-
-    ``sharpe_variance`` is the variance of the per-period Sharpe ratios across the
-    trials that were actually run.
-
-    At ``n_configurations == 1`` the closed form contains ``Z^-1(0)`` and diverges.
-    There is nothing to deflate with a single trial, so this returns 0.0 - the
-    honest value, and the one that makes the deflated Sharpe collapse to the
-    probabilistic Sharpe against zero.
-    """
     if n_configurations < 1:
         raise ValueError("n_configurations must be at least 1")
     if sharpe_variance < 0:
@@ -406,19 +305,6 @@ def deflated_sharpe_ratio(
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
     significance_level: float = 0.95,
 ) -> DeflatedSharpe:
-    """Section 7 step 5.
-
-    ``n_configurations`` is positional and has **no default**. The number of things
-    you tried before arriving at this result is the single input a researcher is
-    most tempted to leave blank, and a default here would be a lie with a number
-    attached. For this strategy the pre-registration fixes it at 1; if it is ever
-    greater than 1, section 5 of that document has been violated.
-
-    ``trial_sharpes`` are the per-period Sharpe ratios of every configuration tried,
-    required whenever ``n_configurations > 1`` because the deflation term depends on
-    how much the trials varied. There is no way to estimate that from a single
-    surviving result, so it is demanded rather than assumed.
-    """
     if not isinstance(n_configurations, (int, np.integer)) or isinstance(n_configurations, bool):
         raise TypeError("n_configurations must be an int")
     if n_configurations < 1:
@@ -476,15 +362,8 @@ def deflated_sharpe_ratio(
     )
 
 
-# --------------------------------------------------------------------------------------
-# the demonstration that this module exists for
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class NoiseSweepResult:
-    """What happens when you tune a strategy on data that contains nothing."""
-
     grid: pd.DataFrame = field(repr=False)
     best_config: dict = field(repr=False)
     best_sharpe: float = 0.0
@@ -527,27 +406,9 @@ def noise_sweep(
     n_days: int = 1250,
     annual_vol: float = 0.16,
 ) -> NoiseSweepResult:
-    """Data-mine a configuration on pure noise and watch a fake edge appear.
-
-    Nothing here touches the real strategy: the sweep runs on synthetic random
-    walks and its output is a warning, not a parameter. The pre-registered
-    configuration stays exactly as PREREGISTRATION.md states it regardless of what
-    wins here.
-
-    The grid spans three axes - lookback, vol-estimate halflife, and long-only
-    versus long-short - because that is what a researcher actually tries, and
-    because a hundred *correlated* lookbacks understate the problem: adjacent
-    lookbacks produce nearly the same backtest, so the deflation term, which is
-    driven by how much the trials differ from one another, comes out too small and
-    the correction under-corrects.
-
-    The sample is deliberately short. Someone with 25 years of data struggles to
-    mine a Sharpe above 1; someone with five years finds one easily, which is both
-    the more common and the more dangerous situation.
-    """
     from dataclasses import replace as _replace  # noqa: PLC0415
 
-    from .backtest import run_backtest  # local import: avoids a cycle
+    from .backtest import run_backtest
     from ..signal import trend_signal  # noqa: PLC0415
 
     prices = synthetic_prices(cfg.universe, seed=seed, n_days=n_days, annual_vol=annual_vol)
@@ -585,14 +446,6 @@ def noise_sweep(
 
 @dataclass(frozen=True, slots=True)
 class NoiseSweepStudy:
-    """The same mining exercise repeated on independent noise datasets.
-
-    A single sweep is one draw. Whether the mined in-sample Sharpe happens to clear
-    any particular threshold on that draw is luck; whether the deflated Sharpe ever
-    mistakes the mined result for a real edge is the property worth asserting, and
-    it needs more than one dataset to assert honestly.
-    """
-
     sweeps: tuple[NoiseSweepResult, ...]
 
     @property
@@ -642,27 +495,13 @@ def noise_sweep_study(
     n_days: int = 750,
     **kwargs,
 ) -> NoiseSweepStudy:
-    """Repeat :func:`noise_sweep` across independent noise datasets.
-
-    ``n_days=750`` is about three years, chosen because that is roughly how much
-    data someone has when they start mining, and because the point being
-    demonstrated - that a short sample plus a hundred configurations manufactures a
-    Sharpe above 1 out of nothing - is a statement about small samples.
-    """
     return NoiseSweepStudy(
         sweeps=tuple(noise_sweep(cfg, seed=seed, n_days=n_days, **kwargs) for seed in seeds)
     )
 
 
-# --------------------------------------------------------------------------------------
-# section 8's pre-committed decision rule
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class DecisionRuleResult:
-    """The verdict, evaluated mechanically against the thresholds in section 8."""
-
     strategy_sharpe: float
     benchmark_sharpe: float
     n_positive_instruments: int
@@ -686,21 +525,6 @@ def evaluate_decision_rule(
     benchmark_sharpe: float,
     n_positive_instruments: int,
 ) -> DecisionRuleResult:
-    """Apply section 8 exactly as written, with no interpretation at the margin.
-
-    Section 8, verbatim::
-
-        - I will consider the hypothesis supported if net Sharpe over the full sample
-          exceeds 0.40 AND the sign is positive in at least 9 of 12 instruments
-          AND net Sharpe exceeds equal-weight buy-and-hold of the same 12 ETFs
-          by at least 0.15.
-        - I will abandon it if net Sharpe is below 0.15, or if it fails to beat
-          equal-weight buy-and-hold at all.
-        - Between those, the result is inconclusive and I will not trade it.
-
-    Comparators follow the document's own words: "exceeds" is strict, "at least" is
-    inclusive, "below" is strict.
-    """
     exceeds_min = strategy_sharpe > cfg.support_min_sharpe
     enough_positive = n_positive_instruments >= cfg.support_min_positive_instruments
     margin = strategy_sharpe - benchmark_sharpe
@@ -724,7 +548,7 @@ def evaluate_decision_rule(
         f"({strategy_sharpe:+.3f} vs {benchmark_sharpe:+.3f})",
     ]
 
-    if supported and abandon:  # pragma: no cover - section 8 makes this unreachable
+    if supported and abandon:  # pragma: no cover
         verdict = "CONTRADICTORY - the decision rule is internally inconsistent here"
     elif supported:
         verdict = "SUPPORTED"
@@ -771,15 +595,6 @@ def standalone_instrument_sharpes(
     risk_free=None,
     cost_bps: float | None = None,
 ) -> pd.Series:
-    """Run the rule on each instrument alone, one at a time.
-
-    Section 8 asks whether "the sign is positive in at least 9 of 12 instruments".
-    This is the reading that matches the hypothesis in section 1 - that the effect
-    exists *across markets* - and the reading used in the cited Moskowitz, Ooi &
-    Pedersen paper. It is not the same as each instrument's contribution to the
-    portfolio's P&L, which is dominated by how large a weight the vol-scaling gave
-    it; both are reported.
-    """
     from dataclasses import replace as _replace  # noqa: PLC0415
 
     from ..data import PriceData  # noqa: PLC0415

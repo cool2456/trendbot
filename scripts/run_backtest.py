@@ -1,57 +1,4 @@
 #!/usr/bin/env python3
-"""Run a pre-registered experiment's test protocol.
-
-Experiment 001 - PREREGISTRATION.md, diversified time-series trend::
-
-    python scripts/run_backtest.py                           # headline backtest + decision rule
-    python scripts/run_backtest.py --synthetic --seed 0      # section 7 step 1, the noise test
-    python scripts/run_backtest.py --validate                # steps 1, 3, 4, 5 in order
-    python scripts/run_backtest.py --full-history            # 1993-2026, not the all-12 window
-    python scripts/run_backtest.py --experiment 001 --regression   # THE REFACTOR GATE
-
-Experiment 002 - PREREG_002.md, cross-sectional momentum::
-
-    python scripts/run_backtest.py --experiment 002          # steps 1 and 4-8
-    python scripts/run_backtest.py --experiment 002 --noise  # step 3, both variants
-    python scripts/run_backtest.py --experiment 002 --validate   # the whole section 7 protocol
-
-Experiment 003 - PREREG_003.md, cross-sectional momentum on US equities::
-
-    python scripts/run_backtest.py --experiment 003          # steps 1-2 and 5-10
-    python scripts/run_backtest.py --experiment 003 --noise  # step 4, both variants
-    python scripts/run_backtest.py --experiment 003 --validate   # the whole section 7 protocol
-
-Experiment 004 - PREREG_004.md, point-in-time universe with delistings::
-
-    python scripts/run_backtest.py --experiment 004 --free-tier   # step 1, the pipeline gate
-    python scripts/run_backtest.py --experiment 004 --noise       # step 4, both variants
-    python scripts/run_backtest.py --experiment 004 --paired      # step 6, the A/B diagnostic
-    python scripts/run_backtest.py --experiment 004 --validate    # the whole section 7 protocol
-
-Experiment 005 - PREREG_005.md, cross-sectional currency momentum on H.10 FX rates::
-
-    python scripts/run_backtest.py --experiment 005          # steps 1-3 and 5-11
-    python scripts/run_backtest.py --experiment 005 --noise  # step 4, both variants
-    python scripts/run_backtest.py --experiment 005 --validate   # the whole section 7 protocol
-
-Experiment 006 - PREREG_006.md, multi-strategy risk allocation over 001/002/005::
-
-    python scripts/run_backtest.py --experiment 006 --sleeves    # step 1, the reproduction gate
-    python scripts/run_backtest.py --experiment 006 --noise      # step 4, the noise test
-    python scripts/run_backtest.py --experiment 006              # steps 2-3 and 5-10
-    python scripts/run_backtest.py --experiment 006 --validate   # the whole protocol
-
-Experiment 001's headline window starts on the first bar for which every one of the
-twelve instruments has a complete 252-day lookback (2008-02-29). Experiment 002's
-window is not chosen at all: PREREG_002.md section 6 pre-commits 2008-01-01 to
-present, before any result existed.
-
-``--regression`` is the gate that had to pass before experiment 002's signal could be
-written. Experiment 002 required generalising the strategy protocol from
-``DataFrame -> Series`` to ``dict[str, DataFrame] -> DataFrame``, which touches the
-engine every number in FINDINGS.md came out of. The gate runs experiment 001 through
-BOTH engines on the real history and refuses to pass unless they agree.
-"""
 
 from __future__ import annotations
 
@@ -103,21 +50,7 @@ def rule(title: str) -> None:
     print(f"\n{'=' * 78}\n{title}\n{'=' * 78}")
 
 
-# --------------------------------------------------------------------------------------
-
-
 def cmd_regression(cfg, args) -> int:
-    """THE GATE — experiment 001 must survive the generalisation of the engine.
-
-    Runs the real twelve-ETF history through the original engine and through the
-    generalised panel engine and compares them three ways: the pre-registered Sharpe
-    against the number recorded in FINDINGS.md, the benchmark likewise, and the two
-    equity curves against each other bit for bit.
-
-    The recorded numbers live in :mod:`trendbot.regression` and are outputs, not
-    parameters. If this fails, the refactor broke something; the correct response is
-    never to edit them.
-    """
     rule("EXPERIMENT 001 REGRESSION GATE - THE GENERALISED ENGINE MUST REPRODUCE 001")
     prices = load_prices(cfg.universe, source=args.source)
     rf = load_risk_free_rate()
@@ -230,9 +163,6 @@ def cmd_synthetic(cfg, args) -> int:
         f"-> {'PASS' if passed else 'FAIL'}"
     )
 
-    # Drifting data is the counterpart check: a long-only strategy on data that does
-    # trend should make money. A strategy that earns nothing on either is broken in a
-    # way the driftless test alone cannot see.
     drifting = noise_test(cfg, seeds=seeds[:3], n_days=args.n_days, annual_drift=0.08)
     print(
         f"\nCounterpart check on +8%/yr drifting random walks: strategy Sharpe "
@@ -340,9 +270,6 @@ def cmd_backtest(cfg, args) -> int:
     returns = result.excess_returns.loc[start:]
     stats = result.stats_from(start)
 
-    # Section 8's benchmark is "equal-weight buy-and-hold", taken literally: bought
-    # once, then held. The alternatives are reported below because the choice moves
-    # the margin by more than the 0.15 the rule turns on.
     bh_excess = (buy_and_hold(prices, cfg, start=start) - rf_daily).loc[start:]
     bh_stats = summarise(bh_excess)
 
@@ -471,7 +398,7 @@ def cmd_backtest(cfg, args) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser()
     parser.add_argument(
         "--experiment",
         default="001",
@@ -490,8 +417,6 @@ def main(argv=None) -> int:
     parser.add_argument("--validate", action="store_true", help="section 7 steps 1, 3, 4 and 5")
     parser.add_argument("--full-history", action="store_true", help="start at the first bar, not the all-12 date")
     parser.add_argument("--seed", type=int, default=0)
-    # Default resolved per experiment: 8 for 001 (unchanged), 16 for 002, whose noise
-    # test carries a pass/fail gate and therefore wants a tighter distribution.
     parser.add_argument("--n-seeds", type=int, default=None)
     parser.add_argument("--n-days", type=int, default=6000)
     parser.add_argument("--tolerance", type=float, default=0.2, help="noise-test Sharpe tolerance")

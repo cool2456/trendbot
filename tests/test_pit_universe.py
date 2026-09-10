@@ -1,26 +1,3 @@
-"""STEP 1's GATE — a hand-built fixture with a delisting, a ticker change and a reuse.
-
-PREREG_004.md's build order requires that before any paid data is touched, a fixture
-carrying all three of experiment 004's new failure modes resolves correctly and is
-verified by hand. Everything asserted here is arithmetic a reader can check.
-
-The three cases, and what each would look like if it were handled wrongly:
-
-**A reused ticker.** ``ZZZ`` belongs to permaticker 100 until it delists in 2011, and
-to a different company, permaticker 300, from 2015. Keyed on the ticker string those
-two become one security with a continuous price series, and a twelve-month momentum
-number gets computed across a four-year gap between two unrelated companies. The tests
-assert they stay separate and that the reuse is *reported* rather than silently merged.
-
-**A ticker change.** Permaticker 200 trades as ``OLD`` and later as ``NEW``. Keyed on
-the ticker it is two securities, each with half a history, and neither has the 252 days
-section 2 requires. Keyed on the permaticker it is one security throughout.
-
-**A delisting.** Permaticker 100 goes bankrupt. Section 3 assigns -100%. A
-forward-filled panel would assign 0% and quietly convert a total loss into a flat
-month.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -40,19 +17,9 @@ from trendbot.pit_universe import (
 )
 from trendbot.sharadar import classify_delist_reason
 
-# --------------------------------------------------------------------------------------
-# the fixture, written out so the expected answers are readable
-# --------------------------------------------------------------------------------------
 
 CALENDAR = pd.bdate_range("2010-01-04", "2016-12-30")
 
-# permaticker -> (ticker label, first bar, last bar)
-#   100  ZZZ   trades 2010-01-04 .. 2011-06-30, then goes bankrupt
-#   200  NEW   trades throughout; was called OLD until 2013
-#   300  ZZZ   a DIFFERENT company that gets the recycled ticker, from 2015
-#   400  AAA   trades throughout, never delists
-#   500  BBB   trades throughout but is a preferred share - excluded by section 2
-#   600  CCC   trades throughout but is priced under $5 - excluded by the floor
 FIXTURE = {
     100: ("ZZZ", "2010-01-04", "2011-06-30", "Domestic Common Stock", True),
     200: ("NEW", "2010-01-04", "2016-12-30", "Domestic Common Stock", False),
@@ -100,12 +67,6 @@ def _actions_table() -> pd.DataFrame:
 
 
 def _panels():
-    """Prices in which every security's own path is trivially checkable.
-
-    Each name starts at its own base price and rises 0.05% a day, so momentum is
-    positive and identical for everyone; the universe filters, not the ranking, are what
-    these tests are about. ``CCC`` is priced under the $5 floor throughout.
-    """
     n = len(CALENDAR)
     drift = 1.0005 ** np.arange(n)
     bases = {100: 20.0, 200: 30.0, 300: 40.0, 400: 50.0, 500: 60.0, 600: 2.0}
@@ -115,10 +76,9 @@ def _panels():
         live = (CALENDAR >= pd.Timestamp(first)) & (CALENDAR <= pd.Timestamp(last))
         series = np.where(live, bases[permaticker] * drift, np.nan)
         closeadj[str(permaticker)] = series
-        # dollar volume descends with permaticker so the top-N ranking is predictable
         volume[str(permaticker)] = np.where(live, 1e9 / permaticker, np.nan)
     openadj = closeadj.copy()
-    closeunadj = closeadj.copy()  # no splits in the fixture, so the two coincide
+    closeunadj = closeadj.copy()
     return closeadj, openadj, closeunadj, volume
 
 
@@ -132,11 +92,6 @@ def master():
     return build_security_master(_tickers_table(), _actions_table())
 
 
-# --------------------------------------------------------------------------------------
-# failure mode 1 - a reused ticker must not merge two companies
-# --------------------------------------------------------------------------------------
-
-
 def test_a_reused_ticker_stays_two_securities(master):
     assert master.label(100) == "ZZZ"
     assert master.label(300) == "ZZZ"
@@ -148,7 +103,6 @@ def test_a_reused_ticker_stays_two_securities(master):
 
 
 def test_the_two_companies_sharing_a_ticker_have_disjoint_price_histories():
-    """Merged on the ticker string, 100's 2011 prices would feed 300's 2015 momentum."""
     closeadj, _, _, _ = _panels()
     a, b = closeadj["100"], closeadj["300"]
     assert a.last_valid_index() == pd.Timestamp("2011-06-30")
@@ -162,11 +116,6 @@ def test_the_recycled_ticker_is_not_tradeable_under_the_dead_companys_id(master)
     assert master.tradeable_on(300, pd.Timestamp("2015-06-01"))
 
 
-# --------------------------------------------------------------------------------------
-# failure mode 2 - a ticker change must not split one security in two
-# --------------------------------------------------------------------------------------
-
-
 def test_a_ticker_change_leaves_one_security_with_one_history(master):
     assert 200 in master.table.index
     assert "OLD" in master.ticker_history[200]
@@ -177,11 +126,6 @@ def test_a_ticker_change_leaves_one_security_with_one_history(master):
     assert series.index[0] == pd.Timestamp("2010-01-04")
     assert series.index[-1] == pd.Timestamp("2016-12-30")
     assert len(series) == len(CALENDAR), "one continuous history, not two halves"
-
-
-# --------------------------------------------------------------------------------------
-# failure mode 3 - a delisting is a return, not a missing value
-# --------------------------------------------------------------------------------------
 
 
 def test_the_delisting_is_classified_and_dated(master):
@@ -204,7 +148,6 @@ def test_bankruptcy_assigns_minus_one_hundred_percent_not_a_flat_month(cfg004, m
     assert bool(checked.iloc[0]["agrees"])
     assert checked.iloc[0]["realised_return"] == pytest.approx(-1.0, abs=1e-9)
 
-    # and the counterfactual the treatment rules out
     forward_filled = closeadj["100"].ffill()
     event = row["event_bar"]
     naive = forward_filled.loc[event] / forward_filled.loc[row["last_traded_bar"]] - 1.0
@@ -215,6 +158,8 @@ def test_bankruptcy_assigns_minus_one_hundred_percent_not_a_flat_month(cfg004, m
     "bucket,expected",
     [(BANKRUPTCY, -1.0), (UNKNOWN, -0.30), (ACQUISITION, 0.0)],
 )
+
+
 def test_each_section_3_bucket_gets_its_own_return(cfg004, bucket, expected):
     tickers = _tickers_table()
     actions = pd.DataFrame(
@@ -237,7 +182,6 @@ def test_each_section_3_bucket_gets_its_own_return(cfg004, bucket, expected):
 
 
 def test_the_unknown_override_moves_only_the_unknown_bucket(cfg004):
-    """Section 3's mandatory ladder must not silently move bankruptcy or acquisition."""
     tickers = _tickers_table().copy()
     tickers.loc[tickers["permaticker"] == 200, "isdelisted"] = True
     tickers.loc[tickers["permaticker"] == 200, "lastpricedate"] = pd.Timestamp("2014-06-30")
@@ -260,13 +204,11 @@ def test_the_unknown_override_moves_only_the_unknown_bucket(cfg004):
 
 
 def test_proceeds_accrue_at_the_cash_rate_after_a_delisting(cfg004, master):
-    """Section 3 says proceeds go to cash; section 5 says cash earns the T-bill rate."""
     closeadj, openadj, _, _ = _panels()
     rf = pd.Series(0.04 / 252.0, index=CALENDAR)
     panels, applied = build_panels(
         cfg004, closeadj=closeadj, openadj=openadj, master=master, rf_daily=rf
     )
-    # use an acquisition so the terminal value is not ~0 and the accrual is visible
     acquisition_master = build_security_master(
         _tickers_table(),
         pd.DataFrame([{"date": pd.Timestamp("2011-06-30"), "action": "acquisitionby",
@@ -284,12 +226,6 @@ def test_proceeds_accrue_at_the_cash_rate_after_a_delisting(cfg004, master):
 
 
 def test_prices_after_the_delist_date_are_neutralised_not_traded_on(cfg004):
-    """A vendor panel that runs past a recorded delisting must not keep trading it.
-
-    The two disagree in real data often enough to matter: the actions table records a
-    date, the price table sometimes carries a few more bars. Taking the panel's word
-    would let a dead security carry a live price into a momentum ranking.
-    """
     tickers = _tickers_table().copy()
     tickers.loc[tickers["permaticker"] == 200, "isdelisted"] = True
     tickers.loc[tickers["permaticker"] == 200, "lastpricedate"] = pd.Timestamp("2014-06-30")
@@ -311,7 +247,6 @@ def test_prices_after_the_delist_date_are_neutralised_not_traded_on(cfg004):
     checked = verify_delisting_returns(panels, applied)
     assert bool(checked.set_index("permaticker").loc[200, "agrees"])
 
-    # every bar after the event is the frozen terminal value, so nothing later moves
     after = panels.close["200"].loc[row["event_bar"]:]
     assert np.allclose(after.to_numpy(), float(row["terminal_price"]))
 
@@ -322,11 +257,6 @@ def test_a_bankrupt_position_is_worth_essentially_nothing(cfg004, master):
     terminal = float(applied.iloc[0]["terminal_price"])
     assert terminal == pytest.approx(BANKRUPT_PRICE_FLOOR)
     assert terminal < 1e-6
-
-
-# --------------------------------------------------------------------------------------
-# section 2 - the universe rule
-# --------------------------------------------------------------------------------------
 
 
 def _universe(cfg004, master, **kwargs):
@@ -347,7 +277,6 @@ def _universe(cfg004, master, **kwargs):
 
 
 def test_no_security_is_in_the_universe_after_its_delisting(cfg004, master):
-    """STEP 2's GATE, on the fixture."""
     universe = _universe(cfg004, master)
     delist = master.delist_date(100)
     for date in universe.membership.index:
@@ -357,7 +286,6 @@ def test_no_security_is_in_the_universe_after_its_delisting(cfg004, master):
 
 
 def test_the_price_floor_uses_the_unadjusted_close(cfg004, master):
-    """CCC trades at ~$2 and must never qualify, whatever its liquidity."""
     universe = _universe(cfg004, master)
     assert 600 not in universe.all_members()
 
@@ -370,7 +298,6 @@ def test_a_preferred_share_is_excluded_by_security_type(cfg004, master):
 
 
 def test_a_security_without_enough_history_is_excluded_until_it_has_it(cfg004, master):
-    """300 lists in 2015; it cannot be ranked until 252 trading days later."""
     universe = _universe(cfg004, master)
     first_seen = [d for d in universe.membership.index if 300 in universe.members(d)]
     assert first_seen, "300 should eventually qualify"
@@ -381,7 +308,6 @@ def test_a_security_without_enough_history_is_excluded_until_it_has_it(cfg004, m
 
 
 def test_the_liquidity_ranking_uses_only_data_through_the_rebalance_date(cfg004, master):
-    """Replacing every bar after date d must not change membership on or before d."""
     closeadj, openadj, closeunadj, volume = _panels()
     rebalances = pd.DatetimeIndex(
         [d for d in CALENDAR if (CALENDAR.to_period("M") == d.to_period("M")).argmax() >= 0]
@@ -412,7 +338,6 @@ def test_the_liquidity_ranking_uses_only_data_through_the_rebalance_date(cfg004,
 
 
 def test_the_realised_start_date_is_reported_not_assumed(cfg004, master):
-    """Section 6's start is a rule; on a six-name fixture it is never satisfied."""
     universe = _universe(cfg004, master)
     assert universe.cfg_universe_size == 500
     assert universe.start_date is None, "six names cannot yield 500"
@@ -423,15 +348,9 @@ def test_entries_and_exits_are_counted_per_rebalance(cfg004, master):
     universe = _universe(cfg004, master)
     flow = universe.entries_and_exits()
     assert set(flow.columns) == {"n", "entered", "left"}
-    # 100 leaves the universe at the first rebalance on or after its delisting
     delist = master.delist_date(100)
     left_after = flow.loc[flow.index >= delist, "left"].sum()
     assert left_after >= 1
-
-
-# --------------------------------------------------------------------------------------
-# section 3's audit - no position exits without a return
-# --------------------------------------------------------------------------------------
 
 
 def test_every_position_exit_is_priced(cfg004, master):
@@ -439,18 +358,13 @@ def test_every_position_exit_is_priced(cfg004, master):
     panels, _ = build_panels(cfg004, closeadj=closeadj, openadj=openadj, master=master)
 
     weights = pd.DataFrame(0.0, index=CALENDAR, columns=closeadj.columns)
-    weights.loc[: pd.Timestamp("2012-01-03"), "100"] = 0.5  # held straight through its death
+    weights.loc[: pd.Timestamp("2012-01-03"), "100"] = 0.5
     weights["400"] = 0.5
 
     exits = audit_position_exits(weights, panels, master)
     assert len(exits) >= 1
     assert exits["priced"].all(), "a position left the book with no price to leave at"
     assert bool(exits[exits["permaticker"] == 100].iloc[0]["delisted"])
-
-
-# --------------------------------------------------------------------------------------
-# the vendor reason mapping
-# --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -467,18 +381,13 @@ def test_every_position_exit_is_priced(cfg004, master):
         ("something the vendor invented later", UNKNOWN),
     ],
 )
+
+
 def test_unrecognised_reasons_fall_into_the_haircut_bucket(action, bucket):
-    """Guessing generously is how a delisting treatment manufactures a return."""
     assert classify_delist_reason(action) == bucket
 
 
-# --------------------------------------------------------------------------------------
-# the ticker->permaticker join, which is where reuse actually bites
-# --------------------------------------------------------------------------------------
-
-
 def _sep_rows():
-    """Vendor-shaped long rows: keyed by (ticker, date), with ZZZ used by two companies."""
     closeadj, openadj, closeunadj, volume = _panels()
     rows = []
     for permaticker, (ticker, first, last, _, _) in FIXTURE.items():
@@ -487,7 +396,7 @@ def _sep_rows():
             key = str(permaticker)
             rows.append(
                 {
-                    "ticker": ticker,  # NOTE: the vendor gives only this, not the ID
+                    "ticker": ticker,
                     "date": date,
                     "open": float(openadj.loc[date, key]),
                     "close": float(closeadj.loc[date, key]),
@@ -500,7 +409,6 @@ def _sep_rows():
 
 
 def test_a_reused_ticker_is_split_back_onto_two_security_ids(master):
-    """The decisive test: two companies, one ticker string, resolved by date window."""
     resolved = resolve_permatickers(_sep_rows(), master)
 
     zzz = resolved[resolved["ticker"] == "ZZZ"]
@@ -523,8 +431,6 @@ def test_the_wide_panel_keeps_the_two_companies_in_separate_columns(master):
     assert closeadj["100"].last_valid_index() == pd.Timestamp("2011-06-30")
     assert closeadj["300"].first_valid_index() == pd.Timestamp("2015-01-02")
 
-    # the counterfactual: keyed on the ticker string these merge into one series whose
-    # "twelve-month return" in 2016 spans two unrelated companies
     merged = _sep_rows()
     merged = merged[merged["ticker"] == "ZZZ"].set_index("date")["closeadj"].sort_index()
     assert merged.notna().sum() == closeadj["100"].notna().sum() + closeadj["300"].notna().sum()
@@ -532,9 +438,7 @@ def test_the_wide_panel_keeps_the_two_companies_in_separate_columns(master):
 
 
 def test_the_derived_open_is_on_the_same_basis_as_the_adjusted_close(master):
-    """Trading a split-only open against a split-and-dividend close leaks the dividend."""
     rows = _sep_rows().copy()
-    # a 2% dividend adjustment on one name: closeadj sits 2% below close
     rows.loc[rows["ticker"] == "AAA", "close"] = rows.loc[rows["ticker"] == "AAA", "closeadj"] / 0.98
     rows.loc[rows["ticker"] == "AAA", "open"] = rows.loc[rows["ticker"] == "AAA", "close"]
 
@@ -563,18 +467,7 @@ def test_duplicate_security_date_rows_are_refused(master):
         assemble_wide_panels(resolved, calendar=CALENDAR)
 
 
-# --------------------------------------------------------------------------------------
-# the rule itself is unchanged from experiment 003
-# --------------------------------------------------------------------------------------
-
-
 def test_a_full_membership_reproduces_experiment_003s_strategy_exactly(cfg004):
-    """PREREG_004.md section 1: "the data is the only variable".
-
-    With every name in the universe on every date, the point-in-time strategy IS
-    experiment 003's strategy. If these two ever disagree, 004 has changed the rule as
-    well as the data and the comparison to 003 stops meaning anything.
-    """
     from trendbot.config_003 import load_config_003
     from trendbot.engine.panel import price_panel
     from trendbot.engine.validation import synthetic_prices
@@ -596,12 +489,6 @@ def test_a_full_membership_reproduces_experiment_003s_strategy_exactly(cfg004):
 
 
 def test_a_name_out_of_the_universe_is_excluded_from_the_sort_not_zeroed(cfg004):
-    """The same distinction sections 2-4 of every prior experiment turned on.
-
-    A name masked out must not be rankable at all. Were it instead given a momentum of
-    zero it would sort into the middle of the book and could displace a real name from
-    a decile boundary.
-    """
     from trendbot.engine.panel import price_panel
     from trendbot.engine.validation import synthetic_prices
     from trendbot.strategies import PointInTimeMomentum

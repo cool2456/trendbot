@@ -1,10 +1,3 @@
-"""Broker adapters, offline.
-
-The Alpaca adapter is exercised against a fake ``requests.Session`` so that its URL
-construction, paper-only guarantees and response parsing are all tested without a
-network call.
-"""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -22,13 +15,9 @@ from trendbot.brokers.schwab import SchwabBroker
 REPO = Path(__file__).resolve().parent.parent
 
 
-# ---- hard invariant 4: paper only ----------------------------------------------------
-
-
 def test_the_only_trading_endpoint_is_the_paper_endpoint():
     assert PAPER_TRADING_URL == "https://paper-api.alpaca.markets"
     source = (REPO / "trendbot" / "brokers" / "alpaca.py").read_text()
-    # Every mention of the trading host must carry the paper- prefix.
     for index in range(len(source)):
         if source.startswith("api.alpaca.markets", index):
             assert source[max(0, index - 6) : index] == "paper-", (
@@ -47,14 +36,12 @@ def test_no_module_in_the_package_references_a_live_trading_endpoint():
 
 
 def test_market_data_host_is_distinct_from_the_trading_host():
-    # data.alpaca.markets is read-only and cannot place an order.
     assert MARKET_DATA_URL == "https://data.alpaca.markets"
     assert "paper" not in MARKET_DATA_URL
 
 
 def test_adapter_declares_itself_paper():
     assert AlpacaPaperBroker.is_paper is True
-    # ... and it is a class attribute, so it cannot be turned off by a constructor arg.
     assert "is_paper" not in inspect.signature(AlpacaPaperBroker.__init__).parameters
 
 
@@ -77,9 +64,6 @@ def _real_credentials_with_env():
     return key, secret
 
 
-# ---- Schwab is a documented refusal, not an oversight --------------------------------
-
-
 def test_schwab_raises_with_both_reasons():
     with pytest.raises(NotImplementedError) as excinfo:
         SchwabBroker()
@@ -90,7 +74,7 @@ def test_schwab_raises_with_both_reasons():
 
 def test_schwab_implements_the_interface_but_every_method_raises():
     assert issubclass(SchwabBroker, Broker)
-    instance = SchwabBroker.__new__(SchwabBroker)  # bypass __init__
+    instance = SchwabBroker.__new__(SchwabBroker)
     for name in ("get_positions", "get_account", "get_open_orders", "get_clock"):
         with pytest.raises(NotImplementedError):
             getattr(instance, name)()
@@ -98,15 +82,6 @@ def test_schwab_implements_the_interface_but_every_method_raises():
         instance.submit("SPY", 1, OrderSide.BUY, "id")
     with pytest.raises(NotImplementedError):
         instance.get_last_close(["SPY"])
-
-
-def test_schwab_docstring_records_why():
-    doc = SchwabBroker.__module__ and __import__("trendbot.brokers.schwab", fromlist=["x"]).__doc__
-    assert "no paper environment" in doc.lower() or "no sandbox" in doc.lower()
-    assert "refresh token" in doc.lower()
-
-
-# ---- the ABC forbids a local position cache ------------------------------------------
 
 
 def test_the_interface_offers_no_way_to_set_a_position():
@@ -120,9 +95,6 @@ def test_the_interface_offers_no_way_to_set_a_position():
 def test_broker_is_abstract():
     with pytest.raises(TypeError):
         Broker()
-
-
-# ---- the adapter, against a fake transport -------------------------------------------
 
 
 class FakeResponse:
@@ -195,7 +167,6 @@ def test_get_positions_hits_the_paper_host_every_call(broker):
     for _ in range(3):
         positions = b.get_positions()
     assert positions["SPY"] == Position("SPY", 10.0, 7674.5, 760.0, 767.45)
-    # three calls, every one of them a live request to the paper host
     assert len(b._session.calls) == 3
     assert all(url.startswith(PAPER_TRADING_URL) for _, url, _ in b._session.calls)
 
@@ -257,8 +228,6 @@ def test_get_last_close_uses_raw_prices_and_returns_the_session_date(broker):
     assert result == {"SPY": (767.45, dt.date(2026, 8, 18))}
     _, url, kwargs = b._session.calls[-1]
     assert url.startswith(MARKET_DATA_URL)
-    # Feasibility and order sizing must use the price actually quoted, not a
-    # back-adjusted research series.
     assert kwargs["params"]["adjustment"] == "raw"
 
 

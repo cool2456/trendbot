@@ -1,25 +1,3 @@
-"""Parse PREREG_003.md into a frozen configuration object.
-
-Same contract as :mod:`trendbot.config` and :mod:`trendbot.config_002`: the
-pre-registration is the sole source of truth, every parameter is *pulled* out of the
-text, and a missing, ambiguous or self-contradictory value is a fatal
-:class:`~trendbot.config.ConfigParseError` rather than a silent default.
-
-Why a third parser rather than a third branch in the second one
----------------------------------------------------------------
-Because the documents differ where it matters. Experiment 002's universe is a table
-of tickers that the parser reads; experiment 003's is a *rule* - "current S&P 500
-constituents with continuous data from 2008-01-01" - which no document can enumerate
-and which resolves against a dated constituent snapshot and a price vendor. Making one
-parser serve both would mean loosening the patterns that make either of them strict,
-which is the opposite of the point.
-
-The universe is therefore parsed as a *specification*, not a list: the index name, the
-history requirement, and the expected yield range. :func:`resolve_universe` turns that
-specification plus a snapshot plus price data into the concrete ticker tuple, and the
-count it produces is reported rather than assumed.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -41,7 +19,6 @@ _PREREG_NAME = "PREREG_003.md"
 
 
 def find_preregistration_003(start: Path | None = None) -> Path:
-    """Locate PREREG_003.md by walking up from ``start`` (default: this file)."""
     here = (start or Path(__file__).resolve()).resolve()
     for parent in [here, *here.parents]:
         candidate = parent / _PREREG_NAME if parent.is_dir() else parent.parent / _PREREG_NAME
@@ -55,43 +32,33 @@ def find_preregistration_003(start: Path | None = None) -> Path:
 
 @dataclass(frozen=True, slots=True)
 class Config003:
-    """Every frozen parameter of equity cross-sectional momentum, from PREREG_003.md."""
-
-    # provenance
     source_path: Path
     source_sha256: str
     committed_on: str
     signed_by: str
     signed_date: str
 
-    # header - the cumulative trial counter
     configurations_tried: int
 
-    # section 2 - universe, as a specification rather than a list
     index_name: str
     universe_history_required_from: str
     expected_universe_low: int
     expected_universe_high: int
     survivorship_flattens_gradient: bool
 
-    # section 3 - signal
     formation_days: int
     skip_days: int
     n_quantiles: int
     long_only: bool
 
-    # section 4 - risk scaling
     gross_exposure_cap: float
 
-    # section 5 - execution
     rebalance: str
     cost_bps_per_side: float
     cost_sensitivity_bps: tuple[float, ...]
 
-    # section 6 - sample window
     sample_start: str
 
-    # section 8 - pre-committed decision rule
     support_min_sharpe: float
     support_min_sharpe_excess_over_buy_and_hold: float
     max_inversions: int
@@ -100,7 +67,6 @@ class Config003:
     abandon_below_sharpe: float
     abandon_below_spread_t_stat: float
 
-    # section 9 - expectations of record
     expected_sharpe_low: float
     expected_sharpe_high: float
     bug_threshold_sharpe: float
@@ -142,9 +108,9 @@ class Config003:
             )
         if self.max_inversions < 0:
             raise ConfigParseError("the tolerated inversion count cannot be negative")
-        pd.Timestamp(self.sample_start)  # raises if section 6's date is unparseable
+        pd.Timestamp(self.sample_start)
         for month in self.required_crash_months:
-            pd.Period(month, freq="M")  # raises if section 9's months are unparseable
+            pd.Period(month, freq="M")
 
     @property
     def cost_rate_per_side(self) -> float:
@@ -170,7 +136,6 @@ def _parse_text(text: str, source_path: Path) -> Config003:
         ).group(1)
     )
 
-    # ---- section 2: the universe is a rule, not a list -------------------------------
     universe_rule = _require_unique(
         r"\*\*Current (S&P 500) constituents with continuous daily data from\s*"
         r"(\d{4}-\d{2}-\d{2})\s*to\s*\npresent\.\*\*",
@@ -182,9 +147,6 @@ def _parse_text(text: str, source_path: Path) -> Config003:
     expected = _require_unique(
         r"Expected yield\s*(\d+)\s*[-–—]\s*(\d+)\s*names", s2, "the expected universe size range"
     )
-    # Section 2's survivorship argument is the reason the verdict has to be stated in
-    # two directions. It carries no number, so its presence is asserted here; deleting
-    # it from the document becomes a parse error rather than a quietly dropped caveat.
     _require_unique(
         r"artificially \*\*narrow\*\* and the monotonicity gradient artificially \*\*flat\*\*",
         s2,
@@ -196,7 +158,6 @@ def _parse_text(text: str, source_path: Path) -> Config003:
         "section 2's conservative-evidence clause",
     )
 
-    # ---- section 3: the signal --------------------------------------------------------
     formula = _require_unique(
         r"momentum_i\(t\)\s*=\s*P_i\(t-(\d+)\)\s*/\s*P_i\(t-(\d+)\)\s*-\s*1",
         s3,
@@ -218,15 +179,12 @@ def _parse_text(text: str, source_path: Path) -> Config003:
     long_only = bool(re.search(r"^Long-only\.", s3, re.MULTILINE))
     if not long_only:
         raise ConfigParseError("section 3 no longer declares the strategy long-only")
-    # Per-date eligibility, not per-universe. Asserted so that removing it from the
-    # document cannot quietly turn "excluded from this ranking" into "excluded always".
     _require_unique(
         r"Names lacking \d+ days of history are excluded from that date's ranking",
         s3,
         "section 3's per-date eligibility rule",
     )
 
-    # ---- section 4: risk scaling ------------------------------------------------------
     gross_cap = float(
         _require_unique(
             r"Gross exposure\s*(\d+(?:\.\d+)?)\s*when invested", s4, "gross exposure"
@@ -235,7 +193,6 @@ def _parse_text(text: str, source_path: Path) -> Config003:
     _require_unique(r"no volatility targeting", s4, "the no-vol-targeting clause")
     _require_unique(r"Equal weight within the top decile", s4, "the equal-weight rule")
 
-    # ---- section 5: execution ---------------------------------------------------------
     rebalance = _require_unique(
         r"Rebalance:\s*(.+?)\.?\s*$", s5, "rebalance schedule", re.MULTILINE
     ).group(1).strip()
@@ -254,12 +211,10 @@ def _parse_text(text: str, source_path: Path) -> Config003:
         "section 5's point-in-time adjustment requirement",
     )
 
-    # ---- section 6: sample window -----------------------------------------------------
     sample_start = _require_unique(
         r"sample window\s*\n?\s*\((\d{4}-\d{2}-\d{2})\s*to present\)", s6, "sample window start"
     ).group(1)
 
-    # ---- section 8: the decision rule -------------------------------------------------
     support_sharpe = float(
         _require_unique(
             r"Net Sharpe \(excess of T-bill, \d+ bps\) exceeds\s*\*\*(\d+(?:\.\d+)?)\*\*",
@@ -305,7 +260,6 @@ def _parse_text(text: str, source_path: Path) -> Config003:
             "the spread t-statistic abandonment threshold",
         ).group(1)
     )
-    # The two abandonment limbs that carry no number of their own.
     _require_unique(
         r"Fails to beat equal-weight buy-and-hold at all", s8, "the buy-and-hold abandon clause"
     )
@@ -314,7 +268,6 @@ def _parse_text(text: str, source_path: Path) -> Config003:
         r"More than one decile inversion", s8, "the inversion-count abandon clause"
     )
 
-    # ---- section 9: expectations of record --------------------------------------------
     exp = _require_unique(
         r"Realistic net Sharpe:\s*\*\*(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)\*\*",
         s9,
@@ -328,8 +281,6 @@ def _parse_text(text: str, source_path: Path) -> Config003:
             r"Turnover higher than 002's\s*(\d+(?:\.\d+)?)×", s9, "the turnover expectation"
         ).group(1)
     )
-    # "March–May 2009 and April 2020 must appear among the worst months" - expanded to
-    # the explicit month list so the check is a set membership test rather than prose.
     crash = _require_unique(
         r"\*\*Momentum crashes are mandatory\.\*\*\s*(\w+)[-–—](\w+)\s*(\d{4})\s*and\s*(\w+)\s*(\d{4})",
         s9,
@@ -391,7 +342,6 @@ _CACHE: dict[Path, Config003] = {}
 
 
 def load_config_003(path: Path | str | None = None, *, use_cache: bool = True) -> Config003:
-    """Parse PREREG_003.md into a frozen :class:`Config003`."""
     resolved = Path(path).resolve() if path is not None else find_preregistration_003()
     if use_cache and resolved in _CACHE:
         return _CACHE[resolved]

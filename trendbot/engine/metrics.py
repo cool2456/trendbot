@@ -1,26 +1,3 @@
-"""Performance metrics.
-
-Conventions, fixed here once and applied everywhere. PREREGISTRATION.md does not
-specify these; they are reporting conventions rather than strategy parameters, and
-they are disclosed in FINDINGS.md.
-
-* **These functions are risk-free-agnostic.** Every ratio here is computed on
-  whatever series it is handed, with no rate subtracted internally. The *caller*
-  decides. In practice ``BacktestResult.stats`` hands them
-  ``BacktestResult.excess_returns``, so the reported headline Sharpe is an
-  excess-of-T-bill figure, and the section 8 benchmark is treated identically -
-  see :func:`trendbot.data.load_risk_free_rate` for why. Keeping the subtraction
-  out of these functions means there is exactly one place that decides the
-  convention, rather than a rate quietly applied twice or not at all.
-* **Annualisation uses 252 trading days**, matching the lookback's unit.
-* **Standard deviation uses ddof=1.**
-* **Sortino's downside deviation uses the full-sample denominator** (sum of squared
-  negative returns divided by the total number of observations, not by the number
-  of negative ones), which is the Sortino/Satchell convention.
-* Returns are simple arithmetic period returns, compounded geometrically for CAGR
-  and equity curves.
-"""
-
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -68,12 +45,10 @@ def _as_series(returns: pd.Series | np.ndarray) -> pd.Series:
 
 
 def equity_curve(returns: pd.Series, initial: float = 1.0) -> pd.Series:
-    """Geometrically compounded equity curve, starting at ``initial``."""
     return initial * (1.0 + _as_series(returns)).cumprod()
 
 
 def cagr(returns: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
-    """Compound annual growth rate implied by the return series."""
     r = _as_series(returns)
     if len(r) == 0:
         return float("nan")
@@ -82,17 +57,11 @@ def cagr(returns: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> f
     if years <= 0:
         return float("nan")
     if total_growth <= 0:
-        return -1.0  # wiped out
+        return -1.0
     return total_growth ** (1.0 / years) - 1.0
 
 
 def _is_degenerate(r: pd.Series, sd: float) -> bool:
-    """True when the dispersion is indistinguishable from floating-point noise.
-
-    A literally constant series does not always produce ``std == 0``: a run of 0.001
-    yields 4.3e-19, which turns a ratio into a Sharpe of 3.7e16. Testing against zero
-    exactly is therefore not enough, and the threshold has to scale with the data.
-    """
     if not np.isfinite(sd):
         return True
     scale = float(np.max(np.abs(r.to_numpy()))) if len(r) else 0.0
@@ -100,11 +69,6 @@ def _is_degenerate(r: pd.Series, sd: float) -> bool:
 
 
 def sharpe(returns: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
-    """Annualised Sharpe ratio with a zero risk-free rate.
-
-    A series with no meaningful dispersion has an undefined Sharpe, and this returns
-    NaN rather than an enormous number that would look like a spectacular result.
-    """
     r = _as_series(returns)
     if len(r) < 2:
         return float("nan")
@@ -115,14 +79,13 @@ def sharpe(returns: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) ->
 
 
 def sortino(returns: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
-    """Annualised Sortino ratio against a zero minimum acceptable return."""
     r = _as_series(returns)
     if len(r) < 2:
         return float("nan")
     downside = np.minimum(r.to_numpy(), 0.0)
     dd = float(np.sqrt(np.mean(downside**2)))
     if _is_degenerate(r, dd):
-        return float("nan")  # no losing day: ratio is undefined, not infinite
+        return float("nan")
     return float(r.mean()) / dd * np.sqrt(periods_per_year)
 
 
@@ -132,19 +95,16 @@ def drawdown_series(returns: pd.Series) -> pd.Series:
 
 
 def max_drawdown(returns: pd.Series) -> float:
-    """Worst peak-to-trough decline, as a negative fraction."""
     dd = drawdown_series(returns)
     return float(dd.min()) if len(dd) else float("nan")
 
 
 def time_underwater(returns: pd.Series) -> float:
-    """Fraction of observations spent below a prior equity peak."""
     dd = drawdown_series(returns)
     return float((dd < 0).mean()) if len(dd) else float("nan")
 
 
 def longest_drawdown_days(returns: pd.Series) -> int:
-    """Longest run of consecutive observations below a prior peak."""
     dd = drawdown_series(returns)
     if not len(dd):
         return 0
@@ -164,15 +124,6 @@ def calmar(returns: pd.Series, periods_per_year: int = TRADING_DAYS_PER_YEAR) ->
 
 
 def annual_weight_churn(weights: pd.DataFrame, periods_per_year: int = TRADING_DAYS_PER_YEAR) -> float:
-    """Annualised change in the held weight vector, ``sum_t sum_i |dw_it|``.
-
-    This is NOT turnover. Held weights move every day the prices move, so this
-    accumulates on days when nothing whatsoever is traded - a two-asset book bought
-    once and never touched scores 2.4 over a year. It is reported only as a measure
-    of how much the book drifts; multiplying it by a cost per side would
-    substantially overstate what trading actually costs. Use :func:`annual_turnover`
-    for that.
-    """
     if weights.empty:
         return float("nan")
     dw = weights.diff()
@@ -187,13 +138,6 @@ def annual_turnover(
     n_periods: int,
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
 ) -> float:
-    """Annualised one-way turnover, from the trades actually executed.
-
-    ``trades`` holds the weight change transacted at each rebalance, so this counts
-    only real trading. One unit means the portfolio's gross notional is replaced once
-    per year, and multiplying it by the per-side cost reproduces the observed drag
-    between the gross and net equity curves.
-    """
     if trades is None or trades.empty or n_periods <= 0:
         return float("nan")
     total = float(trades.abs().sum(axis=1).sum())
@@ -210,14 +154,12 @@ def average_net_exposure(weights: pd.DataFrame) -> float:
 
 
 def invested_fraction(weights: pd.DataFrame) -> float:
-    """Fraction of observations with any position on at all."""
     if weights.empty:
         return float("nan")
     return float((weights.abs().sum(axis=1) > 0).mean())
 
 
 def calendar_year_returns(returns: pd.Series) -> pd.Series:
-    """Simple compounded return per calendar year."""
     r = _as_series(returns)
     if not isinstance(r.index, pd.DatetimeIndex):
         raise TypeError("calendar_year_returns needs a DatetimeIndex")
@@ -232,8 +174,6 @@ def hit_rate(returns: pd.Series) -> float:
 
 @dataclass(frozen=True, slots=True)
 class PerformanceStats:
-    """The reported performance of one return stream."""
-
     n_periods: int
     years: float
     total_return: float
@@ -274,7 +214,6 @@ def summarise(
     periods_per_year: int = TRADING_DAYS_PER_YEAR,
     trades: pd.DataFrame | None = None,
 ) -> PerformanceStats:
-    """Compute the full metric set for one return stream."""
     r = _as_series(returns)
     empty_weights = pd.DataFrame(index=r.index) if weights is None else weights
 

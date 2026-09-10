@@ -1,12 +1,3 @@
-"""PREREG_005.md must parse completely, or not at all.
-
-Same contract the other four config tests assert: every parameter comes out of the
-document, and deleting any of them is a fatal parse error rather than a silent default.
-The clauses this file is most careful about are the ones unique to experiment 005 - the
-quote-normalisation requirement, the interest-rate diagnostic, and the argument for why
-the configuration counter is 4 rather than 5.
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -35,15 +26,9 @@ def document():
 
 
 def reparse(text: str) -> Config005:
-    """Parse a modified copy of the document without touching the file or the cache."""
     from trendbot.config_005 import _parse_text  # noqa: PLC0415
 
     return _parse_text(text, find_preregistration_005())
-
-
-# --------------------------------------------------------------------------------------
-# provenance
-# --------------------------------------------------------------------------------------
 
 
 def test_hash_matches_the_document_on_disk(cfg005, document):
@@ -56,13 +41,7 @@ def test_signature_and_dates(cfg005):
     assert cfg005.signed_date == "2026-08-19"
 
 
-# --------------------------------------------------------------------------------------
-# the parameters
-# --------------------------------------------------------------------------------------
-
-
 def test_signal_is_byte_identical_to_the_earlier_experiments(cfg005):
-    """Section 1: "The signal is byte-identical to experiments 002, 003 and 004."."""
     from trendbot.config_002 import load_config_002  # noqa: PLC0415
 
     cfg002 = load_config_002()
@@ -90,7 +69,6 @@ def test_universe_specification(cfg005):
 
 
 def test_decision_rule_thresholds_are_unchanged_from_002_and_003(cfg005):
-    """Section 8: "Thresholds are unchanged from 002 and 003 on purpose."."""
     from trendbot.config_003 import load_config_003  # noqa: PLC0415
 
     cfg003 = load_config_003()
@@ -119,7 +97,6 @@ def test_secondary_beta_benchmark_is_parsed_not_inlined(cfg005):
 
 
 def test_configuration_counter_is_four(cfg005):
-    """The single number the deflated Sharpe is most sensitive to."""
     assert cfg005.configurations_tried == 4
 
 
@@ -128,11 +105,6 @@ def test_every_dislocation_label_can_be_dated(cfg005):
     for label in cfg005.dislocation_labels:
         assert label in DISLOCATION_MONTHS
         assert cfg005.dislocation_months[label]
-
-
-# --------------------------------------------------------------------------------------
-# deleting a clause must be fatal, not silently defaulted
-# --------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -153,6 +125,8 @@ def test_every_dislocation_label_can_be_dated(cfg005):
         "to check whether currency momentum is a disguised equity beta",
     ],
 )
+
+
 def test_removing_a_required_clause_is_a_parse_error(document, fragment):
     assert fragment in document, f"the test's own fragment is stale: {fragment!r}"
     with pytest.raises(ConfigParseError):
@@ -166,7 +140,6 @@ def test_an_unknown_dislocation_label_is_refused(document):
 
 
 def test_a_counter_without_its_justification_is_refused(document):
-    """Bumping the number while deleting the argument for it must not parse."""
     broken = document.replace("PSR corrects\nfor configurations *tried*", "")
     with pytest.raises(ConfigParseError):
         reparse(broken)
@@ -188,11 +161,6 @@ def test_a_formation_window_shorter_than_the_skip_is_refused(document):
     broken = document.replace("P_i(t-21) / P_i(t-252)", "P_i(t-252) / P_i(t-21)")
     with pytest.raises(ConfigParseError, match="must be longer than the skip"):
         reparse(broken)
-
-
-# --------------------------------------------------------------------------------------
-# the object itself
-# --------------------------------------------------------------------------------------
 
 
 def test_config_is_frozen(cfg005):

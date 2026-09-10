@@ -1,35 +1,3 @@
-"""Federal Reserve Economic Data access, for experiment 005's H.10 universe.
-
-PREREG_005.md section 2 defines the universe as a *rule* over a published release —
-"every daily USD exchange rate series published in the Federal Reserve H.10 release
-and available via FRED" — so this module's job is to enumerate that release and pull
-each series' observations **and its metadata**, never a ticker list written from
-memory. The metadata is not decoration: section 2 says the quote convention has to be
-normalised, and the only non-circular source for a series' direction is what FRED
-itself says the series' units are.
-
-Two access paths, one interface
--------------------------------
-``api``
-    ``api.stlouisfed.org``, used when a ``FRED_KEY`` is present in the environment or
-    ``.env``. Structured JSON, and the documented way to do this.
-
-``web``
-    ``fred.stlouisfed.org``, used when there is no key. ``fredgraph.csv`` serves the
-    full observation history and the series page carries the same ``title``/``units``
-    strings the API returns, so the *content* is identical - it is the same database -
-    and only the transport differs. Which path produced a given artefact is recorded on
-    it, so a findings document can state how the data was obtained rather than imply.
-
-There is deliberately no third path and no bundled fallback list. If FRED cannot be
-reached, the experiment stops with a :class:`FredError`, exactly as experiment 004
-stopped rather than substituting data it could not fetch.
-
-Everything is cached under ``data/cache`` as parquet plus a JSON sidecar, so a rerun
-is reproducible without a network round trip and without re-hammering an endpoint the
-Fed operates as a courtesy.
-"""
-
 from __future__ import annotations
 
 import json
@@ -61,40 +29,21 @@ __all__ = [
 FRED_API_ROOT = "https://api.stlouisfed.org/fred"
 FRED_WEB_ROOT = "https://fred.stlouisfed.org"
 
-# The H.10 "Foreign Exchange Rates" release. Section 2 names the release, not the
-# series; this is the release's FRED identifier and is the only hardcoded pointer in
-# the universe path.
 H10_RELEASE_ID = 17
 
 _USER_AGENT = "trendbot/1.0 (research; experiment 005; contact via repository)"
 _TIMEOUT = 60
 _RETRIES = 4
 _BACKOFF = 2.0
-# Minimum seconds between requests. FRED is a courtesy service and its edge applies an
-# IP-level block to bursts: enumerating candidate series concurrently during this build
-# earned a 403 across both fred.stlouisfed.org and api.stlouisfed.org for several
-# minutes, which is the same class of failure that blocked experiment 004. Pacing is
-# cheap - a full refresh of this experiment is a few dozen requests - and the cache
-# means it is paid once.
 _MIN_INTERVAL = 1.5
 _last_request_at = 0.0
 
 
 class FredError(DataError):
-    """Raised when FRED data or metadata cannot be obtained or fails a sanity check."""
-
-
-# --------------------------------------------------------------------------------------
-# credentials and transport
-# --------------------------------------------------------------------------------------
+    pass
 
 
 def fred_api_key() -> str | None:
-    """``FRED_KEY`` from the environment or ``.env``; ``None`` when absent.
-
-    Absence is not an error. It selects the ``web`` access path, which reaches the
-    same database. It *is* reported, so that a findings document says which path ran.
-    """
     env = {**read_dotenv(), **os.environ}
     for name in ("FRED_KEY", "FRED_API_KEY"):
         value = (env.get(name) or "").strip()
@@ -104,17 +53,10 @@ def fred_api_key() -> str | None:
 
 
 def access_path() -> str:
-    """``"api"`` when a key is configured, otherwise ``"web"``."""
     return "api" if fred_api_key() else "web"
 
 
 def _get(url: str, params: dict | None = None) -> requests.Response:
-    """One GET with bounded retries on the failures that are worth retrying.
-
-    Experiment 004 was blocked by a vendor throttle, so this backs off on 429 and 5xx
-    rather than hammering, and it gives up loudly instead of returning something empty
-    that would look like "the series has no data".
-    """
     global _last_request_at
     last: Exception | None = None
     for attempt in range(_RETRIES):
@@ -126,15 +68,12 @@ def _get(url: str, params: dict | None = None) -> requests.Response:
             response = requests.get(
                 url, params=params, timeout=_TIMEOUT, headers={"User-Agent": _USER_AGENT}
             )
-        except requests.RequestException as exc:  # pragma: no cover - network path
+        except requests.RequestException as exc:  # pragma: no cover
             last = exc
         else:
             if response.status_code == 200:
                 return response
             if response.status_code in (403, 429, 500, 502, 503, 504):
-                # 403 here is the edge's burst block, not an authorisation failure: the
-                # same URL succeeds after a pause. Retrying with backoff is correct;
-                # treating it as fatal would abandon a run that only needed to wait.
                 last = FredError(f"{url} returned HTTP {response.status_code}")
             else:
                 raise FredError(
@@ -145,21 +84,8 @@ def _get(url: str, params: dict | None = None) -> requests.Response:
     raise FredError(f"could not fetch {url} after {_RETRIES} attempts: {last}")
 
 
-# --------------------------------------------------------------------------------------
-# metadata
-# --------------------------------------------------------------------------------------
-
-
 @dataclass(frozen=True, slots=True)
 class SeriesMetadata:
-    """What FRED says a series *is*, as opposed to what its numbers are.
-
-    ``units`` is the load-bearing field. For an H.10 exchange rate it reads
-    ``"<A> to One <B>"``, which states the quote convention explicitly and is the only
-    thing in the dataset that does. :mod:`trendbot.fx` parses it; nothing anywhere
-    infers a direction from the values.
-    """
-
     series_id: str
     title: str
     units: str
@@ -203,10 +129,6 @@ def _metadata_from_api(series_id: str, key: str) -> SeriesMetadata:
     )
 
 
-# The series page renders the same strings the API serves. Each pattern is anchored on
-# a label rather than on layout, and every one of them is *required*: a page redesign
-# must break this loudly, because a silently missing ``units`` would take the quote
-# convention with it.
 _OG_TITLE = re.compile(r'property="og:title"\s+content="([^"]*)"')
 _UNITS = re.compile(r"Units:\s*</span>(.*?)(?:<span[^>]*>\s*Frequency|</div>)", re.S)
 _FREQUENCY = re.compile(r"Frequency:\s*</span>(.*?)</div>", re.S)
@@ -232,8 +154,6 @@ def _metadata_from_web(series_id: str) -> SeriesMetadata:
             "units string is what states the quote convention; refusing to continue "
             "without it rather than guessing a direction."
         )
-    # "Japanese Yen to One U.S. Dollar , Not Seasonally Adjusted" -> the part before
-    # the seasonal-adjustment clause, which is a separate field FRED renders inline.
     units = _text(units_match.group(1)).split(",")[0].strip()
     if not units:
         raise FredError(f"the units string for {series_id} parsed to empty")
@@ -259,7 +179,6 @@ def _metadata_from_web(series_id: str) -> SeriesMetadata:
 def fetch_series_metadata(
     series_id: str, *, cache: bool = True, refresh: bool = False
 ) -> SeriesMetadata:
-    """FRED's own description of ``series_id``: title, units, frequency, coverage."""
     path = _metadata_cache(series_id)
     if cache and not refresh and path.is_file():
         return SeriesMetadata(**json.loads(path.read_text()))
@@ -273,11 +192,6 @@ def fetch_series_metadata(
     return meta
 
 
-# --------------------------------------------------------------------------------------
-# observations
-# --------------------------------------------------------------------------------------
-
-
 def _observations_from_api(series_id: str, key: str) -> pd.Series:
     payload = _get(
         f"{FRED_API_ROOT}/series/observations",
@@ -287,9 +201,6 @@ def _observations_from_api(series_id: str, key: str) -> pd.Series:
     if not rows:
         raise FredError(f"FRED returned no observations for {series_id}")
     frame = pd.DataFrame(rows)[["date", "value"]]
-    # FRED's own missing-value marker. Coercing it to NaN is the point: a day a rate
-    # was not published is a hole, never a zero and never a stale carry - what to do
-    # about the hole is decided downstream, in one place, in trendbot.fx.
     values = pd.to_numeric(frame["value"].replace(".", pd.NA), errors="coerce")
     return pd.Series(
         values.to_numpy(dtype=float),
@@ -326,13 +237,6 @@ def _observations_from_web(series_id: str) -> pd.Series:
 def fetch_observations(
     series_id: str, *, cache: bool = True, refresh: bool = False
 ) -> pd.Series:
-    """The full published history of ``series_id``, NaN where FRED publishes no value.
-
-    The index is FRED's own observation calendar for the series, which for a daily
-    H.10 rate is every weekday including the ones on which no rate was published. That
-    is deliberate: the holes are data - they are what section 3 of the build order asks
-    to be handled explicitly - and dropping them here would hide them.
-    """
     path = _observations_cache(series_id)
     if cache and not refresh and path.is_file():
         return pd.read_parquet(path)[series_id]
@@ -347,11 +251,6 @@ def fetch_observations(
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         series.to_frame().to_parquet(path)
     return series
-
-
-# --------------------------------------------------------------------------------------
-# release enumeration - section 2's "published in the H.10 release"
-# --------------------------------------------------------------------------------------
 
 
 def _release_series_from_api(release_id: int, key: str) -> tuple[str, ...]:
@@ -389,10 +288,6 @@ def _release_series_from_web(release_id: int) -> tuple[str, ...]:
             f"the FRED release page for rid={release_id} listed no series; the page "
             "layout may have changed. Refusing to fall back to a hardcoded list."
         )
-    # The release page renders its series list in one block with no pager. If FRED ever
-    # paginates it, this catches the truncation instead of silently shrinking the
-    # universe - which is precisely the failure section 2's "no substitutions" clause
-    # is written against.
     if re.search(r"\bpageID=(?!1\b)\d+", html):
         raise FredError(
             f"the FRED release page for rid={release_id} appears paginated; the "
@@ -404,12 +299,6 @@ def _release_series_from_web(release_id: int) -> tuple[str, ...]:
 def list_release_series(
     release_id: int = H10_RELEASE_ID, *, cache: bool = True, refresh: bool = False
 ) -> tuple[str, ...]:
-    """Every FRED series identifier published under ``release_id``.
-
-    Section 2's universe is a rule over this list, not a list. Filtering it down to the
-    daily bilateral USD rates happens in :mod:`trendbot.fx`, against each series'
-    metadata, so the filter is auditable and the discarded series are reportable.
-    """
     path = CACHE_DIR / f"fred_release_{release_id}.json"
     if cache and not refresh and path.is_file():
         return tuple(json.loads(path.read_text())["series"])

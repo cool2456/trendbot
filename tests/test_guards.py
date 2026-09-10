@@ -1,5 +1,3 @@
-"""Guards and the fail-closed halt flag (BUILD_PROMPT hard invariant 5)."""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -31,11 +29,7 @@ def halt(tmp_path):
     return HaltState(tmp_path / "halt.json")
 
 
-# ---- GuardConfig has no defaults -------------------------------------------------
-
-
 def test_guard_config_requires_every_threshold():
-    # A missing threshold must be impossible to construct, not silently permissive.
     with pytest.raises(TypeError):
         GuardConfig()
     with pytest.raises(TypeError):
@@ -55,6 +49,8 @@ def test_guard_config_requires_every_threshold():
         {"max_data_staleness_days": 0},
     ],
 )
+
+
 def test_guard_config_rejects_nonsense(kwargs):
     base = dict(
         max_drawdown=0.15, max_gross_notional=25_000.0, max_orders_per_day=12, max_data_staleness_days=1
@@ -75,13 +71,9 @@ def test_guard_config_is_frozen():
         CONSERVATIVE.max_drawdown = 0.9
 
 
-# ---- the halt flag ----------------------------------------------------------------
-
-
 def test_halt_flag_persists_across_objects(tmp_path):
     path = tmp_path / "halt.json"
     HaltState(path).halt("because", "detail", "ctx")
-    # A brand-new object, as a later process would construct, still sees the halt.
     assert HaltState(path).is_halted()
     assert HaltState(path).record().reason == "because"
 
@@ -124,8 +116,6 @@ def test_fail_closed_sets_the_flag_and_reraises(halt):
 
 
 def test_fail_closed_also_catches_base_exceptions(halt):
-    # An interrupted rebalance leaves the book in an unknown state, which is exactly
-    # when the next run must not start.
     with pytest.raises(KeyboardInterrupt):
         with fail_closed(halt, "interrupted"):
             raise KeyboardInterrupt
@@ -144,9 +134,6 @@ def test_check_not_halted_blocks_and_explains_how_to_recover(halt):
         check_not_halted(halt)
 
 
-# ---- individual guards -------------------------------------------------------------
-
-
 def test_check_broker_is_paper():
     class Live:
         is_paper = False
@@ -160,7 +147,7 @@ def test_check_broker_is_paper():
     with pytest.raises(GuardViolation, match="does not declare itself as paper"):
         check_broker_is_paper(Live())
     with pytest.raises(GuardViolation):
-        check_broker_is_paper(object())  # no attribute at all must fail closed
+        check_broker_is_paper(object())
 
 
 def _order(status="new"):
@@ -175,15 +162,14 @@ def test_open_orders_block_new_ones():
 
 
 def test_drawdown_guard():
-    check_drawdown(90.0, 100.0, CONSERVATIVE)  # 10% < 15%
+    check_drawdown(90.0, 100.0, CONSERVATIVE)
     with pytest.raises(GuardViolation, match="drawdown"):
-        check_drawdown(84.0, 100.0, CONSERVATIVE)  # 16% > 15%
+        check_drawdown(84.0, 100.0, CONSERVATIVE)
     with pytest.raises(GuardViolation):
         check_drawdown(100.0, 0.0, CONSERVATIVE)
 
 
 def test_drawdown_boundary_is_strict():
-    # exactly at the limit does not trip
     check_drawdown(85.0, 100.0, CONSERVATIVE)
 
 
@@ -201,24 +187,15 @@ def test_order_cap_counts_orders_already_sent_today():
 
 
 def test_a_friday_close_is_one_trading_day_old_on_monday():
-    """The bug this replaced blocked 48% of all monthly rebalances.
-
-    The strategy trades on the first trading day of the month, which is a Monday
-    about half the time. Counting calendar days made Friday's close three days old
-    and refused the trade.
-    """
     friday, monday = dt.date(2026, 8, 28), dt.date(2026, 8, 31)
-    check_data_freshness({"SPY": friday}, monday, CONSERVATIVE)  # business-day fallback
+    check_data_freshness({"SPY": friday}, monday, CONSERVATIVE)
     sessions = {dt.date(2026, 8, 27), friday, monday}
     check_data_freshness({"SPY": friday}, monday, CONSERVATIVE, trading_calendar=sessions)
 
 
 def test_a_holiday_is_not_a_trading_day_when_a_calendar_is_supplied():
-    # 2026-01-01 is a market holiday: Wednesday's close is one session old on Friday.
     sessions = {dt.date(2025, 12, 31), dt.date(2026, 1, 2), dt.date(2026, 1, 5)}
     check_data_freshness({"SPY": dt.date(2025, 12, 31)}, dt.date(2026, 1, 2), CONSERVATIVE, trading_calendar=sessions)
-    # without a calendar the business-day fallback counts the holiday and refuses,
-    # which is the conservative direction and why the live path passes a calendar
     with pytest.raises(GuardViolation, match="stale"):
         check_data_freshness({"SPY": dt.date(2025, 12, 31)}, dt.date(2026, 1, 2), CONSERVATIVE)
 
@@ -238,9 +215,8 @@ def test_data_freshness_calendar_days():
 
 
 def test_data_freshness_uses_a_trading_calendar_when_given():
-    today = dt.date(2026, 9, 1)  # a Tuesday after a long weekend
+    today = dt.date(2026, 9, 1)
     sessions = {dt.date(2026, 8, 28), dt.date(2026, 9, 1)}
-    # Friday's bar is 4 calendar days old but only 1 trading day old.
     check_data_freshness(
         {"SPY": dt.date(2026, 8, 28)}, today, CONSERVATIVE, trading_calendar=sessions
     )
@@ -254,29 +230,17 @@ def test_data_freshness_rejects_a_future_bar_and_an_empty_map():
         check_data_freshness({}, today, CONSERVATIVE)
 
 
-# ---- high-water mark ----------------------------------------------------------------
-
-
 def test_high_water_mark_only_ratchets_up(tmp_path):
     hwm = EquityHighWaterMark(tmp_path / "hw.json")
     assert hwm.update(100.0) == 100.0
     assert hwm.update(120.0) == 120.0
     assert hwm.update(90.0) == 120.0
-    # and it survives a restart
     assert EquityHighWaterMark(tmp_path / "hw.json").peak == 120.0
 
 
-# ---- the flag must survive its own corruption -----------------------------------
-
-
 def test_a_corrupt_halt_flag_still_blocks_but_stays_clearable(tmp_path):
-    """A flag that blocks trading AND crashes the tool that clears it is unrecoverable.
-
-    The only sanctioned way out of a halt is the CLI, and the CLI has to read the flag
-    before it can clear it.
-    """
     path = tmp_path / "halt.json"
-    path.write_text('{"halted_at": "2026-01-0')  # truncated mid-write
+    path.write_text('{"halted_at": "2026-01-0')
     halt = HaltState(path)
 
     assert halt.is_halted()
@@ -297,13 +261,11 @@ def test_a_halt_flag_containing_unexpected_keys_does_not_crash(tmp_path):
 
 
 def test_an_unknown_order_count_refuses_rather_than_assuming_zero():
-    # A guard whose input is missing must fail closed, never permissive.
     with pytest.raises(GuardViolation, match="cannot report"):
         check_order_cap(None, 1, CONSERVATIVE)
 
 
 def test_a_non_paper_broker_latches_the_halt_flag(tmp_path):
-    """Invariant 4's condition is not transient, so unlike other guards it is sticky."""
     from trendbot.guards import NotAPaperAccount
 
     class Live:

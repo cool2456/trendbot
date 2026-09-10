@@ -1,18 +1,3 @@
-"""Experiment 006's protocol — PREREG_006.md, multi-strategy risk allocation.
-
-Offline throughout: every series here is synthetic, so nothing in this file may touch a
-price vendor. The real sleeve series are gated by the runner's ``--sleeves`` step, which
-is where the network-fed reproduction check belongs.
-
-The load-bearing test in this file is
-:func:`test_a_single_sleeve_at_full_weight_reproduces_its_own_return`. Experiment 006
-hands sleeve returns to the panel engine dressed as instrument prices, and if that
-dressing is wrong — the wrong open, an off-by-one in the cumulative product, the
-risk-free rate netted twice — every number in the experiment is wrong by a small amount
-that looks entirely plausible. The round trip is what pins it: a book holding one sleeve
-at weight one must return exactly that sleeve's return, to floating point.
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -61,18 +46,13 @@ def zero_rf(returns) -> pd.Series:
     return pd.Series(0.0, index=returns.index)
 
 
-# --------------------------------------------------------------------------------------
-# section 5 - alignment
-# --------------------------------------------------------------------------------------
-
-
 def test_alignment_intersects_and_reports_what_it_dropped():
     index = pd.bdate_range("2010-01-04", periods=100)
     a = pd.Series(0.0, index=index)
     b = pd.Series(0.0, index=index.delete([10, 20, 30]))
     c = pd.Series(0.0, index=index.delete([10, 40]))
     alignment = align({"A": a, "B": b, "C": c})
-    assert len(alignment.index) == 96  # 100 minus dates 10, 20, 30, 40
+    assert len(alignment.index) == 96
     assert alignment.table.loc["A", "dropped"] == 4
     assert alignment.table.loc["B", "dropped"] == 1
     assert alignment.table.loc["C", "dropped"] == 2
@@ -100,27 +80,14 @@ def test_alignment_refuses_an_empty_set():
         align({})
 
 
-# --------------------------------------------------------------------------------------
-# the panel synthesis - the round trip that pins every number in the experiment
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("held", ["A", "B", "C"])
 def test_a_single_sleeve_at_full_weight_reproduces_its_own_return(returns, zero_rf, held):
-    """A book holding one sleeve at weight one must return exactly that sleeve's return.
-
-    This is the identity that makes the whole construction trustworthy. If the synthetic
-    panel used the wrong open, or shifted the cumulative product by a bar, or netted the
-    risk-free rate twice, this is where it shows up — and nowhere else would it look
-    like anything other than a slightly different Sharpe.
-    """
     prices = synthetic_panel(returns, zero_rf)
     targets = pd.DataFrame(0.0, index=returns.index, columns=list(LABELS))
     targets[held] = 1.0
     result = run_panel_backtest(
         prices, list(LABELS), None, targets=targets, cost_bps=0.0, gross_cap=1.0, risk_free=zero_rf
     )
-    # The engine is in cash until its first rebalance, so the comparison starts there.
     first = result.diagnostics.index[0]
     produced = result.excess_returns.loc[first:]
     expected = returns[held].loc[first:]
@@ -129,13 +96,7 @@ def test_a_single_sleeve_at_full_weight_reproduces_its_own_return(returns, zero_
 
 
 def test_the_round_trip_holds_with_a_non_zero_risk_free_rate(returns):
-    """The rate must be netted exactly once, not twice and not never.
-
-    Feeding *excess* series to the engine instead of *total* ones would subtract
-    financing a second time on the invested fraction. At a 3% rate and full investment
-    that is 3%/yr of pure error, which this catches and a Sharpe comparison would not.
-    """
-    rf = pd.Series(0.03, index=returns.index)  # 3% annualised, constant
+    rf = pd.Series(0.03, index=returns.index)
     prices = synthetic_panel(returns, rf)
     targets = pd.DataFrame(0.0, index=returns.index, columns=list(LABELS))
     targets["A"] = 1.0
@@ -150,7 +111,6 @@ def test_the_round_trip_holds_with_a_non_zero_risk_free_rate(returns):
 
 def test_synthetic_panel_prices_have_no_intraday_leg(returns, zero_rf):
     prices = synthetic_panel(returns, zero_rf)
-    # open_t == close_{t-1}: the whole of a day's return falls between them.
     assert np.allclose(
         prices.open.to_numpy()[1:], prices.close.to_numpy()[:-1], atol=0.0, rtol=0.0
     )
@@ -165,11 +125,6 @@ def test_synthetic_panel_refuses_unaligned_input(returns, zero_rf):
         synthetic_panel(holed, zero_rf)
 
 
-# --------------------------------------------------------------------------------------
-# section 3 - the covariance is the lookahead surface
-# --------------------------------------------------------------------------------------
-
-
 def test_covariance_is_unchanged_by_appending_future_data(returns):
     passed, worst = covariance_is_point_in_time(returns, halflife=60, n_future=200)
     assert passed
@@ -177,12 +132,6 @@ def test_covariance_is_unchanged_by_appending_future_data(returns):
 
 
 def test_weights_at_a_date_do_not_move_when_later_returns_change(returns):
-    """The property the covariance gate is a proxy for, checked on the weights.
-
-    Rewriting the last third of the sample must leave every earlier target weight
-    untouched. A full-sample covariance would fail this even if it somehow passed the
-    matrix-level gate.
-    """
     targets, _, _ = overlay_targets(returns, **{k: v for k, v in SETTINGS.items() if k != "cost_bps"})
     cut = returns.index[len(returns) * 2 // 3]
     perturbed = returns.copy()
@@ -214,11 +163,6 @@ def test_every_solve_on_realistic_covariance_converges(returns):
     assert np.allclose(live.to_numpy(), 1.0 / 3.0, atol=1e-9)
 
 
-# --------------------------------------------------------------------------------------
-# section 4 - the benchmark must be the same construction
-# --------------------------------------------------------------------------------------
-
-
 def test_symmetry_gate_accepts_identical_settings(returns, zero_rf):
     other = synthetic_sleeve_returns(
         1, n_days=len(returns), labels=LABELS, correlation=CORRELATION, annual_vols=VOLS
@@ -233,6 +177,8 @@ def test_symmetry_gate_accepts_identical_settings(returns, zero_rf):
 @pytest.mark.parametrize(
     "changed", [{"halflife": 30}, {"vol_target": 0.15}, {"gross_cap": 2.0}, {"max_weight": 0.9}]
 )
+
+
 def test_symmetry_gate_refuses_any_asymmetry(returns, zero_rf, changed):
     portfolio = run_overlay(returns, zero_rf, label="portfolio", **SETTINGS)
     benchmark = run_overlay(returns, zero_rf, label="benchmark", **{**SETTINGS, **changed})
@@ -241,16 +187,10 @@ def test_symmetry_gate_refuses_any_asymmetry(returns, zero_rf, changed):
 
 
 def test_identical_inputs_give_identical_overlays(returns, zero_rf):
-    """Two overlays on the same series must agree bit for bit, or the run is not a run."""
     left = run_overlay(returns, zero_rf, label="left", **SETTINGS)
     right = run_overlay(returns, zero_rf, label="right", **SETTINGS)
     assert np.array_equal(left.returns.to_numpy(), right.returns.to_numpy())
     assert left.sharpe == right.sharpe
-
-
-# --------------------------------------------------------------------------------------
-# section 8 - the decision rule
-# --------------------------------------------------------------------------------------
 
 
 def _correlation(sleeve_rho: float, benchmark_rho: float):
@@ -325,7 +265,6 @@ def test_failing_the_correlation_clause_triggers_abandon():
 
 
 def test_a_positive_but_insufficient_margin_is_inconclusive():
-    """Section 8's middle band: beats everything, by less than it must."""
     decision = _decision(0.62, 0.60, {"A": 0.3, "B": 0.61, "C": 0.1}, _correlation(0.1, 0.8))
     assert decision.clause_a > 0 and decision.clause_b > 0
     assert decision.clause_a < 0.15 and decision.clause_b < 0.10
@@ -335,11 +274,6 @@ def test_a_positive_but_insufficient_margin_is_inconclusive():
 def test_decision_rule_refuses_an_empty_sleeve_set():
     with pytest.raises(ValueError, match="empty set"):
         _decision(0.5, 0.4, {}, _correlation(0.1, 0.8))
-
-
-# --------------------------------------------------------------------------------------
-# the noise test
-# --------------------------------------------------------------------------------------
 
 
 def test_synthetic_sleeves_have_exactly_zero_mean():
@@ -379,11 +313,6 @@ def test_the_construction_earns_nothing_on_sleeves_containing_nothing():
 
 
 def test_the_correlation_recovery_check_is_not_vacuous():
-    """A one-bar slip between sleeves must fail the recovery check.
-
-    Without this, the noise test's second half would pass whatever it was handed and
-    the alignment discipline section 8's third clause depends on would be untested.
-    """
     frame = synthetic_sleeve_returns(
         0, n_days=1500, labels=LABELS, correlation=CORRELATION, annual_vols=VOLS
     )
@@ -395,9 +324,6 @@ def test_the_correlation_recovery_check_is_not_vacuous():
     tolerance = 5.0 / np.sqrt(1500 - 3)
     assert intact_error <= tolerance
     assert slipped_error > tolerance
-    # Not marginal: shifting B by one bar collapses its 0.70 correlation with A to
-    # roughly zero, so the error is around 0.7 - several times the tolerance, and far
-    # outside anything sampling could produce.
     assert slipped_error > 0.5
     assert slipped_error > 4 * tolerance
 

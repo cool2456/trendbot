@@ -1,23 +1,3 @@
-"""The scheduled entrypoint for the paper path.
-
-One run does exactly this, in this order, all of it inside :func:`~trendbot.guards.fail_closed`:
-
-1. refuse to start if the halt flag is set;
-2. refuse to operate against anything that does not declare itself a paper account;
-3. ask the broker what it holds, what the account is worth, and what orders are open -
-   every run, with no local cache consulted;
-4. refuse to trade on stale prices, on an excessive drawdown, or while any order is open;
-5. reconcile the previous run's predictions against the broker's record;
-6. do nothing further unless today is the first trading day of the month;
-7. compute the signal and the target weights with **the same functions the backtest
-   calls** - :func:`trendbot.signal.trend_signal` and
-   :func:`trendbot.sizing.target_weights` - then round to whole shares;
-8. difference target shares against the broker's reported shares, check the notional
-   and daily-order caps, and submit with a deterministic client order id.
-
-Any exception anywhere in that sequence sets the persistent halt flag and stops.
-"""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -56,13 +36,6 @@ STATE_DIR = REPO_ROOT / "state"
 
 
 def order_id(*, prereg_sha: str, session: dt.date, symbol: str, side: str, qty: int) -> str:
-    """A client order id that is identical for identical intent.
-
-    Idempotency is the whole point: if a run is repeated - a cron misfire, an
-    operator re-running by hand, a retry after a timeout whose order actually landed -
-    the second attempt produces the same id and the broker rejects it as a duplicate
-    instead of doubling the position. Nothing about wall-clock time enters the hash.
-    """
     material = f"{prereg_sha}|{session.isoformat()}|{symbol}|{side}|{int(qty)}"
     return f"tb1-{session.isoformat()}-{symbol}-{hashlib.sha256(material.encode()).hexdigest()[:16]}"
 
@@ -144,12 +117,6 @@ class RunOutcome:
 
 
 def _is_rebalance_session(history_index: pd.DatetimeIndex, session: dt.date) -> bool:
-    """True when ``session`` is the first trading day of its month.
-
-    Determined from the actual trading calendar in the price history rather than
-    from a date rule, so a first-of-month that falls on a holiday is handled the
-    same way the backtest handles it.
-    """
     stamp = pd.Timestamp(session)
     extended = history_index.union(pd.DatetimeIndex([stamp]))
     return stamp in set(rebalance_dates(extended))
@@ -165,7 +132,6 @@ def plan_run(
     history: PriceData,
     session: dt.date | None = None,
 ) -> RunPlan:
-    """Everything up to, but not including, sending an order."""
     check_not_halted(halt)
     check_broker_is_paper(broker)
 
@@ -173,11 +139,9 @@ def plan_run(
     session = session or clock.timestamp.date()
     run_id = f"{session.isoformat()}T{clock.timestamp.strftime('%H%M%S')}"
 
-    # --- the broker is the only source of truth -------------------------------
     account = broker.get_account()
     positions = broker.get_positions()
     open_orders = broker.get_open_orders()
-    # --------------------------------------------------------------------------
 
     check_no_open_orders(open_orders)
 
@@ -186,20 +150,10 @@ def plan_run(
     reference_prices = pd.Series({s: quotes[s][0] for s in universe}, name="price")
     reference_dates = {s: quotes[s][1] for s in universe}
 
-    # Staleness is counted in TRADING days. The calendar comes from the broker, which
-    # is the only authority that knows about market holidays; deriving it from the
-    # price history would be circular, since a history that has stopped updating
-    # supplies no sessions in the very gap that makes it stale. A broker that cannot
-    # supply one returns None and the guard falls back to business days.
     oldest_bar = min([*reference_dates.values(), history.close.index[-1].date()])
     calendar = broker.get_trading_sessions(oldest_bar - dt.timedelta(days=7), session)
     check_data_freshness(reference_dates, session, guard_cfg, trading_calendar=calendar)
 
-    # The price *history* must be current too, not just the quotes. A history that
-    # stops short leaves the session's month with no earlier bar in it, which would
-    # make every day of that month look like the first trading day and fire a
-    # rebalance daily. Checking it here means a stale history refuses to trade
-    # instead of over-trading.
     check_data_freshness(
         {"price history": history.close.index[-1].date()},
         session,
@@ -238,7 +192,6 @@ def plan_run(
             diagnostics={"reason": "not the first trading day of the month"},
         )
 
-    # --- the same signal and sizing code the backtest uses ---------------------
     close = history.close[universe]
     returns = close.pct_change(fill_method=None)
     signal = trend_signal(close, cfg.lookback_days, long_only=cfg.long_only)
@@ -261,8 +214,6 @@ def plan_run(
         cov=cov.xs(decision_date, level=0),
         covariance="full",
     )
-    # Both section 4 caps are re-applied to the post-band weights, exactly as the
-    # backtest does, so a paper book cannot hold something the backtest would not.
     banded = apply_drift_band(targets.weights, current_weights, cfg.drift_band)
     banded = banded.clip(lower=-cfg.per_instrument_cap, upper=cfg.per_instrument_cap)
     band_gross = float(banded.abs().sum())
@@ -340,7 +291,6 @@ def execute_plan(
     log: DivergenceLog,
     dry_run: bool,
 ) -> RunOutcome:
-    """Check the caps, then submit. Nothing here decides *what* to trade."""
     reconciled = log.reconcile(broker, plan.run_id)
 
     if not plan.is_rebalance_day or not plan.orders:
@@ -365,11 +315,6 @@ def execute_plan(
     submitted: list[Order] = []
     now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     for planned in plan.orders:
-        # The prediction is written BEFORE the order is sent, not after the whole
-        # batch. If the broker fails on order five of ten, the first four are real
-        # fills sitting at the broker; batching the writes until the end would leave
-        # them entirely unrecorded, and the divergence log - the one thing that is
-        # supposed to notice exactly this - would show nothing at all.
         log.record_predictions(
             [
                 Prediction(
@@ -393,7 +338,6 @@ def execute_plan(
 
 
 def _orders_already_today(broker: Broker, session: dt.date) -> int | None:
-    """How many orders the broker says it already took today, or None if it cannot say."""
     midnight = dt.datetime.combine(session, dt.time.min, tzinfo=dt.timezone.utc)
     orders = broker.get_orders_since(midnight)
     return None if orders is None else len(orders)
@@ -409,14 +353,6 @@ def run_once(
     dry_run: bool = True,
     session: dt.date | None = None,
 ) -> RunOutcome:
-    """One complete run, fail-closed from end to end.
-
-    Only the halt flag itself is constructed before the guard - it is what the guard
-    writes to, and building it is a single path assignment that cannot fail. Everything
-    else, the configuration included, is built inside: reading a truncated
-    ``high_water.json`` left behind by an earlier crash, or a ``PREREGISTRATION.md``
-    that has gone missing, must halt rather than raise into the void.
-    """
     state = Path(state_dir or STATE_DIR)
     halt = HaltState(state / "halt.json")
 
@@ -424,10 +360,6 @@ def run_once(
         cfg = cfg or load_config()
         high_water = EquityHighWaterMark(state / "high_water.json")
         log = DivergenceLog(state / "divergence.jsonl")
-        # A scheduled runner must re-fetch its history. The parquet cache key has no
-        # expiry, so reusing it would freeze the bot on the day it was first run - and
-        # the staleness guard above would then refuse every subsequent session, for
-        # ever, with no CLI to recover.
         prices = (
             history
             if history is not None

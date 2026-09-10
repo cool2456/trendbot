@@ -1,11 +1,3 @@
-"""An in-memory broker for testing the runner without a network.
-
-Deliberately a full implementation of the ABC rather than a MagicMock: the point of
-several of these tests is that the runner reads state from the broker and nowhere
-else, and a mock that returns whatever it was last told would be unable to
-demonstrate that.
-"""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -35,7 +27,6 @@ class MockBroker(Broker):
         self._now = now or dt.datetime(2026, 9, 1, 14, 0, tzinfo=dt.timezone.utc)
         self._orders: list[Order] = []
         self._fail_on_submit = fail_on_submit
-        #: incremented on every live query, so a test can prove the runner asked
         self.position_queries = 0
 
     @property
@@ -98,7 +89,7 @@ class MockBroker(Broker):
 
     def get_trading_sessions(self, start: dt.date, end: dt.date):
         if self._sessions is None:
-            return None  # exercise the business-day fallback
+            return None
         return {d for d in self._sessions if start <= d <= end}
 
     def get_last_close(self, symbols: list[str]) -> dict[str, tuple[float, dt.date]]:

@@ -1,11 +1,3 @@
-"""PREREG_002.md is the sole source of truth, and the parser refuses to guess.
-
-Same contract as ``tests/test_config.py`` applies to experiment 001: every parameter
-is pulled out of the document, a missing one is fatal rather than defaulted, an
-ambiguous one is fatal rather than resolved, and a document that contradicts itself
-is fatal rather than half-applied.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -35,11 +27,6 @@ def _parse(text: str, tmp_path: Path) -> Config002:
     path = tmp_path / "PREREG_002.md"
     path.write_text(text, encoding="utf-8")
     return load_config_002(path, use_cache=False)
-
-
-# --------------------------------------------------------------------------------------
-# what the document says
-# --------------------------------------------------------------------------------------
 
 
 def test_every_parameter_comes_out_of_the_document(cfg002):
@@ -100,11 +87,6 @@ def test_the_config_is_frozen_and_holds_nothing_mutable(cfg002):
         assert isinstance(value, immutable), f"{field.name} holds a mutable {type(value).__name__}"
 
 
-# --------------------------------------------------------------------------------------
-# the parser refuses to guess
-# --------------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "victim,what",
     [
@@ -118,6 +100,8 @@ def test_the_config_is_frozen_and_holds_nothing_mutable(cfg002):
         ("Signed: **Pranav**   Date: **2026-08-19**", "signature"),
     ],
 )
+
+
 def test_deleting_any_parameter_is_fatal_rather_than_defaulted(text, tmp_path, victim, what):
     assert victim in text, f"fixture is stale: {victim!r} is no longer in the document"
     with pytest.raises(ConfigParseError):
@@ -125,7 +109,6 @@ def test_deleting_any_parameter_is_fatal_rather_than_defaulted(text, tmp_path, v
 
 
 def test_deleting_a_clause_that_carries_no_number_is_also_fatal(text, tmp_path):
-    """The clauses easiest to lose are the ones with nothing to parse out of them."""
     for clause in (
         "- It fails to beat equal-weight buy-and-hold at all, OR",
         "- Quintile ordering is non-monotonic, OR",
@@ -147,11 +130,6 @@ def test_an_ambiguous_parameter_is_fatal_rather_than_resolved(text, tmp_path):
     )
     with pytest.raises(ConfigParseError, match="ambiguous"):
         _parse(doubled, tmp_path)
-
-
-# --------------------------------------------------------------------------------------
-# a document that contradicts itself is fatal
-# --------------------------------------------------------------------------------------
 
 
 def test_a_formula_that_disagrees_with_its_own_prose_is_fatal(text, tmp_path):
@@ -197,13 +175,7 @@ def test_a_duplicated_ticker_is_fatal(text, tmp_path):
         _parse(broken, tmp_path)
 
 
-# --------------------------------------------------------------------------------------
-# the document itself is frozen
-# --------------------------------------------------------------------------------------
-
-
 def test_prereg_002_is_unmodified_relative_to_git_head():
-    """Editing sections 2-6 after seeing a result produces experiment 003, not a fix."""
     proc = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "status", "--porcelain", "--", "PREREG_002.md"],
         capture_output=True,
